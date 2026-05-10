@@ -76,11 +76,8 @@ def find_target_serial():
     return None
 
 
-def setup_scope_safe(scope, scope_kind, target_freq=10_000_000.0, adc_mul=10):
-    """CW305 usb_clk is ~10 MHz by default; configure Husky PLL accordingly.
-
-    target_freq=10e6, adc_mul=10  -> ADC 100 MHz (well within Husky spec).
-    """
+def setup_scope_safe(scope, scope_kind, target_freq=96_000_000.0, adc_mul=2):
+    """CW305 usb_clk is ~96 MHz when healthy. adc_mul=2 -> 192 MHz ADC, safe."""
     scope.gain.db          = 25.0
     scope.adc.samples      = 2000
     scope.adc.offset       = 0
@@ -151,10 +148,10 @@ def main():
                                "bitstream" / "cw305_unified_butterfly2_top_v4.bit"))
     p.add_argument("--no-program", action="store_true")
     p.add_argument("--scope-sn", default=None)
-    p.add_argument("--target-freq", type=float, default=10_000_000.0,
-                   help="Expected target usb_clk frequency. CW305 default ~10 MHz.")
-    p.add_argument("--adc-mul", type=int, default=10,
-                   help="Husky ADC multiplier; ADC = target_freq * adc_mul.")
+    p.add_argument("--target-freq", type=float, default=96_000_000.0,
+                   help="Expected target usb_clk frequency. Healthy CW305 = 96 MHz.")
+    p.add_argument("--adc-mul", type=int, default=2,
+                   help="Husky ADC multiplier; 96e6 * 2 = 192 MHz ADC, safe.")
     args = p.parse_args()
 
     import chipwhisperer as cw
