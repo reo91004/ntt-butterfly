@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Host-side experiment outputs
+host/results/*
+!host/results/.gitkeep
+host/__pycache__/
+*.log
+*.out
+
+# Vivado / FPGA build products
+.Xil/
+*.jou
+*.pb
+*.rpx
+*.rpt
+*.vdi
+*.wdb
+*.str
+*.cache
+*.dmp
+*.xmsgs
+*.runs/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.srcs/sources_1/ip/*/*.mif
+
+# Editor and OS clutter
+.DS_Store
+.vscode/
+.idea/
+*~
+*.swp
+*.swo
+
+# Temporary traces / analysis outputs
+results/
+trace*.npy
+tvla_*.npy
+tvla_*.png

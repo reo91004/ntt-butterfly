@@ -256,7 +256,11 @@ module cw305_unified_butterfly2_top_v4 #(
     assign led2 = busy_reg;
     assign led3 = (direct_write_count != 8'd0);
 
-    assign tio_trigger = usb_trigger;
+    // tio_trigger is asserted while a butterfly evaluation is in flight.
+    // Driving it from busy_reg (instead of the host-controlled usb_trigger pin)
+    // gives the side-channel scope a sub-cycle-accurate alignment window:
+    // rising edge = exact start cycle, falling edge = capture-delay completion.
+    assign tio_trigger = busy_reg;
     assign tio_clkout  = usb_clk_buf;
 
 endmodule
