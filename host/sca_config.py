@@ -33,10 +33,18 @@ DILITHIUM_Q = 8380417
 TVLA_THRESHOLD = 4.5
 
 # Default scope-clock parameters for CW305 SCA setups.
-# CW305 usb_clk is driven by the SAM3U USB clock = 96 MHz on stock CW305.
-# adc_mul = 4 gives 4x oversampling, the standard SCA setting.
-DEFAULT_TARGET_FREQ_HZ = 96_000_000
-DEFAULT_ADC_MUL        = 4
+#
+# Empirically, CW305's usb_clk (the parallel-FIFO clock from the SAM3U) is
+# ~10 MHz, not 96 MHz. Husky's scope.clock.freq_ctr measures it as 10.000305
+# MHz with the unified_butterfly2 wrapper loaded. The XDC has a 100 MHz
+# create_clock constraint but that is a worst-case timing budget, not the
+# actual frequency.
+#
+# adc_mul = 10 gives a 100 MHz ADC clock, well within Husky's 250 MHz spec
+# and the standard CW-Lite/Pro 4× equivalent in oversample density per
+# target cycle (10 ADC samples per usb_clk cycle).
+DEFAULT_TARGET_FREQ_HZ = 10_000_000
+DEFAULT_ADC_MUL        = 10
 
 # Device-name prefixes used to auto-detect scope type from cw.list_devices().
 SCOPE_NAMES = {
