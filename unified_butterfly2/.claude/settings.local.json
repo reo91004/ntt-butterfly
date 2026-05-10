@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/sangwoo/.local/lib/python3.10/site-packages/chipwhisperer/hardware/firmware/cw305/**)",
+      "Read(//home/sangwoo/.local/lib/python3.10/site-packages/chipwhisperer/**)",
+      "Bash(awk 'NR>=2 && NR<=1025 {gsub\\(/[,;]/,\"\"\\); print strtonum\\(\"0x\"$1\\)}' /home/sangwoo/Downloads/unified_zeta.coe)",
+      "Bash(awk '{print $2}')",
+      "Bash(awk 'NR==2 || NR==129 || NR==130 || NR==257 || NR==258 || NR==513 || NR==514 || NR==1024 || NR==1025' /home/sangwoo/Downloads/unified_zeta.coe)",
+      "Bash(awk 'NR>=3 && NR<=1026 {gsub\\(/[,;]/,\"\"\\); print $1}' /home/sangwoo/Downloads/unified_zeta.coe)",
+      "Bash(python3 -c ' *)",
+      "Read(//tools/**)",
+      "Read(//opt/**)",
+      "Read(//home/sangwoo/**)",
+      "Bash(command -v xvlog)",
+      "Bash(iverilog -V)",
+      "Bash(verilator --version)",
+      "Bash(apt list *)",
+      "Bash(dpkg -l)",
+      "Bash(sudo -n apt-get install -y iverilog)",
+      "Bash(mkdir -p /tmp/butterfly_sim)",
+      "Read(//tmp/**)",
+      "Bash(iverilog -g2012 -o sim /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/Modular_Reduction32.v /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/unified_bufferfly2.v /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/unified_butterfly2_top.v /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sim_1/new/tb_unified_butterfly2.v /tmp/butterfly_sim/blk_mem_gen_0.v)",
+      "Bash(echo \"---compile exit $?---\")",
+      "Bash(vvp sim *)",
+      "Bash(iverilog -g2012 -o sim_rand /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/Modular_Reduction32.v /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/unified_bufferfly2.v /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/unified_butterfly2_top.v /tmp/butterfly_sim/blk_mem_gen_0.v /tmp/butterfly_sim/tb_random.v)",
+      "Bash(vvp sim_rand)",
+      "Bash(jupyter nbconvert *)",
+      "Bash(cp /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/Modular_Reduction32.v /home/sangwoo/Desktop/unified_butterfly_tvla_package/hdl/Modular_Reduction32.v)",
+      "Bash(cp /home/sangwoo/Downloads/unified_butterfly2/unified_butterfly2.srcs/sources_1/new/unified_bufferfly2.v /home/sangwoo/Desktop/unified_butterfly_tvla_package/hdl/unified_bufferfly2.v)",
+      "Bash(python3 -c \"import sys, ast; ast.parse\\(sys.stdin.read\\(\\)\\); print\\('notebook syntax OK'\\)\")"
+    ]
+  }
+}

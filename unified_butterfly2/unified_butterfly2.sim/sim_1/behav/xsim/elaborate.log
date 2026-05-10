@@ -1,0 +1,25 @@
+Vivado Simulator v2024.2.0
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+Running: /home/pacl/Vivado/2024.2/bin/unwrapped/lnx64.o/xelab --incr --debug typical --relax --mt 8 -L xil_defaultlib -L blk_mem_gen_v8_4_9 -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_unified_butterfly2_top_behav xil_defaultlib.tb_unified_butterfly2_top xil_defaultlib.glbl -log elaborate.log 
+Using 8 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module blk_mem_gen_v8_4_9.blk_mem_gen_v8_4_9_output_stage(...
+Compiling module blk_mem_gen_v8_4_9.blk_mem_gen_v8_4_9_output_stage(...
+Compiling module blk_mem_gen_v8_4_9.blk_mem_gen_v8_4_9_softecc_outpu...
+Compiling module blk_mem_gen_v8_4_9.blk_mem_gen_v8_4_9_mem_module(C_...
+Compiling module blk_mem_gen_v8_4_9.blk_mem_gen_v8_4_9(C_FAMILY="art...
+Compiling module xil_defaultlib.blk_mem_gen_0
+Compiling module xil_defaultlib.mux2_1
+Compiling module xil_defaultlib.demux1_2
+Compiling module xil_defaultlib.Modular_Reduction32
+Compiling module xil_defaultlib.unified_butterfly2_core
+Compiling module xil_defaultlib.unified_butterfly2_top
+Compiling module xil_defaultlib.tb_unified_butterfly2_top
+Compiling module xil_defaultlib.glbl
+Built simulation snapshot tb_unified_butterfly2_top_behav

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wave_config>
+   <wave_state>
+   </wave_state>
+   <db_ref_list>
+      <db_ref path="tb_unified_butterfly2_top_behav.wdb" id="1">
+         <top_modules>
+            <top_module name="glbl" />
+            <top_module name="tb_unified_butterfly2_top" />
+         </top_modules>
+      </db_ref>
+   </db_ref_list>
+   <zoom_setting>
+      <ZoomStartTime time="0.000 ns"></ZoomStartTime>
+      <ZoomEndTime time="186.001 ns"></ZoomEndTime>
+      <Cursor1Time time="72.838 ns"></Cursor1Time>
+   </zoom_setting>
+   <column_width_setting>
+      <NameColumnWidth column_width="236"></NameColumnWidth>
+      <ValueColumnWidth column_width="142"></ValueColumnWidth>
+   </column_width_setting>
+   <WVObjectSize size="9" />
+   <wvobject type="logic" fp_name="/tb_unified_butterfly2_top/clk">
+      <obj_property name="ElementShortName">clk</obj_property>
+      <obj_property name="ObjectShortName">clk</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_unified_butterfly2_top/a">
+      <obj_property name="ElementShortName">a[31:0]</obj_property>
+      <obj_property name="ObjectShortName">a[31:0]</obj_property>
+      <obj_property name="Radix">SIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_unified_butterfly2_top/b">
+      <obj_property name="ElementShortName">b[31:0]</obj_property>
+      <obj_property name="ObjectShortName">b[31:0]</obj_property>
+      <obj_property name="Radix">SIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject type="logic" fp_name="/tb_unified_butterfly2_top/mode">
+      <obj_property name="ElementShortName">mode</obj_property>
+      <obj_property name="ObjectShortName">mode</obj_property>
+   </wvobject>
+   <wvobject type="logic" fp_name="/tb_unified_butterfly2_top/mode2">
+      <obj_property name="ElementShortName">mode2</obj_property>
+      <obj_property name="ObjectShortName">mode2</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_unified_butterfly2_top/k">
+      <obj_property name="ElementShortName">k[9:0]</obj_property>
+      <obj_property name="ObjectShortName">k[9:0]</obj_property>
+      <obj_property name="Radix">SIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_unified_butterfly2_top/out1">
+      <obj_property name="ElementShortName">out1[31:0]</obj_property>
+      <obj_property name="ObjectShortName">out1[31:0]</obj_property>
+      <obj_property name="Radix">SIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_unified_butterfly2_top/out2">
+      <obj_property name="ElementShortName">out2[31:0]</obj_property>
+      <obj_property name="ObjectShortName">out2[31:0]</obj_property>
+      <obj_property name="Radix">SIGNEDDECRADIX</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_unified_butterfly2_top/err">
+      <obj_property name="ElementShortName">err[31:0]</obj_property>
+      <obj_property name="ObjectShortName">err[31:0]</obj_property>
+      <obj_property name="Radix">SIGNEDDECRADIX</obj_property>
+   </wvobject>
+</wave_config>

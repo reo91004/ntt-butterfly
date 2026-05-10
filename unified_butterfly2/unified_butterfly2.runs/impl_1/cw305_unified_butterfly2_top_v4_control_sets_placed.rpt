@@ -1,0 +1,93 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.2 (lin64) Build 5239630 Fri Nov 08 22:34:34 MST 2024
+| Date         : Sat May  9 15:42:45 2026
+| Host         : kyc-system-product-name running 64-bit Ubuntu 22.04.5 LTS
+| Command      : report_control_sets -verbose -file cw305_unified_butterfly2_top_v4_control_sets_placed.rpt
+| Design       : cw305_unified_butterfly2_top_v4
+| Device       : xc7a100t
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+Control Set Information
+
+Table of Contents
+-----------------
+1. Summary
+2. Histogram
+3. Flip-Flop Distribution
+4. Detailed Control Set Information
+
+1. Summary
+----------
+
++----------------------------------------------------------+-------+
+|                          Status                          | Count |
++----------------------------------------------------------+-------+
+| Total control sets                                       |    15 |
+|    Minimum number of control sets                        |    15 |
+|    Addition due to synthesis replication                 |     0 |
+|    Addition due to physical synthesis replication        |     0 |
+| Unused register locations in slices containing registers |    10 |
++----------------------------------------------------------+-------+
+* Control sets can be merged at opt_design using control_set_merge or merge_equivalent_drivers
+** Run report_qor_suggestions for automated merging and remapping suggestions
+
+
+2. Histogram
+------------
+
++--------------------+-------+
+|       Fanout       | Count |
++--------------------+-------+
+| Total control sets |    15 |
+| >= 0 to < 4        |     0 |
+| >= 4 to < 6        |     0 |
+| >= 6 to < 8        |     1 |
+| >= 8 to < 10       |    10 |
+| >= 10 to < 12      |     0 |
+| >= 12 to < 14      |     0 |
+| >= 14 to < 16      |     0 |
+| >= 16              |     4 |
++--------------------+-------+
+* Control sets can be remapped at either synth_design or opt_design
+
+
+3. Flip-Flop Distribution
+-------------------------
+
++--------------+-----------------------+------------------------+-----------------+--------------+
+| Clock Enable | Synchronous Set/Reset | Asynchronous Set/Reset | Total Registers | Total Slices |
++--------------+-----------------------+------------------------+-----------------+--------------+
+| No           | No                    | No                     |             508 |          139 |
+| No           | No                    | Yes                    |               0 |            0 |
+| No           | Yes                   | No                     |               0 |            0 |
+| Yes          | No                    | No                     |             251 |           63 |
+| Yes          | No                    | Yes                    |               0 |            0 |
+| Yes          | Yes                   | No                     |               7 |            3 |
++--------------+-----------------------+------------------------+-----------------+--------------+
+
+
+4. Detailed Control Set Information
+-----------------------------------
+
++------------------+----------------------+-----------------------+------------------+----------------+--------------+
+|   Clock Signal   |     Enable Signal    |    Set/Reset Signal   | Slice Load Count | Bel Load Count | Bels / Slice |
++------------------+----------------------+-----------------------+------------------+----------------+--------------+
+|  tio_clkout_OBUF | led2_OBUF            | wait_count[7]_i_1_n_0 |                3 |              7 |         2.33 |
+|  tio_clkout_OBUF | a_shadow[15]_i_1_n_0 |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | a_shadow[23]_i_1_n_0 |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | a_shadow[31]_i_1_n_0 |                       |                1 |              8 |         8.00 |
+|  tio_clkout_OBUF | a_shadow[7]_i_1_n_0  |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | b_shadow[15]_i_1_n_0 |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | b_shadow[23]_i_1_n_0 |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | b_shadow[31]_i_1_n_0 |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | b_shadow[7]_i_1_n_0  |                       |                1 |              8 |         8.00 |
+|  tio_clkout_OBUF | k_shadow[7]          |                       |                2 |              8 |         4.00 |
+|  tio_clkout_OBUF | U_usb_reg_fe/E[0]    |                       |                3 |              8 |         2.67 |
+|  tio_clkout_OBUF | direct_wr_pulse      |                       |               13 |             31 |         2.38 |
+|  tio_clkout_OBUF | out1_reg[31]_i_1_n_0 |                       |               16 |             64 |         4.00 |
+|  tio_clkout_OBUF | busy_reg4_out        |                       |               15 |             76 |         5.07 |
+|  tio_clkout_OBUF |                      |                       |              139 |            575 |         4.14 |
++------------------+----------------------+-----------------------+------------------+----------------+--------------+
+
+
