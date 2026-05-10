@@ -267,12 +267,26 @@ def capture_loop(
     b_fixed, q,
     seed,
     trigger_mode,
+    vary="b",
+    k_max=256,
     poll_interval=0.0005, poll_timeout=0.5,
 ):
     rng = np.random.default_rng(seed)
-    groups = rng.integers(0, 2, size=n_traces, dtype=np.uint8)  # 0=fixed, 1=random
-    rand_b = rng.integers(0, q, size=n_traces, dtype=np.uint32)
-    b_values = np.where(groups == 0, np.uint32(b_fixed % q), rand_b).astype(np.uint32)
+    if vary == "b":
+        # TVLA-style: b varies (fixed/random groups), k stays fixed.
+        groups   = rng.integers(0, 2, size=n_traces, dtype=np.uint8)  # 0=fixed,1=random
+        rand_b   = rng.integers(0, q, size=n_traces, dtype=np.uint32)
+        b_values = np.where(groups == 0, np.uint32(b_fixed % q), rand_b).astype(np.uint32)
+        k_values = np.full(n_traces, k, dtype=np.uint16)
+    elif vary == "k":
+        # CPA-style: k varies uniformly (public attacker input);
+        #   b stays fixed at b_fixed (the "secret" the attacker tries to recover);
+        #   group is all 0 (no TVLA grouping).
+        groups   = np.zeros(n_traces, dtype=np.uint8)
+        b_values = np.full(n_traces, np.uint32(b_fixed % q), dtype=np.uint32)
+        k_values = rng.integers(0, k_max, size=n_traces, dtype=np.uint16)
+    else:
+        raise ValueError(f"vary must be 'b' or 'k', not {vary!r}")
 
     traces   = np.empty((n_traces, samples), dtype=np.float32)
     out1_arr = np.empty(n_traces, dtype=np.uint32)
@@ -285,15 +299,21 @@ def capture_loop(
                 "Update chipwhisperer or use --trigger-mode internal."
             )
 
+    if vary == "b":
+        secret_summary = (f"vary=b  group A=fixed b={hex(b_fixed % q)}, "
+                          f"group B=random b in [0,{q})  (k fixed at {k})")
+    else:
+        secret_summary = (f"vary=k  k uniform in [0,{k_max})  "
+                          f"(b fixed at {hex(b_fixed % q)} = the SECRET)")
     print(f"[capture] starting {n_traces} traces, {samples} samples each "
-          f"(trigger={trigger_mode}, group A=fixed b={hex(b_fixed % q)}, "
-          f"group B=random b in [0,{q}))")
+          f"(trigger={trigger_mode}, {secret_summary})")
     t0 = time.time()
     fail_count = 0
 
     for i in range(n_traces):
         b_val = int(b_values[i])
-        write_inputs(target, a, b_val, k, mode, mode2)
+        k_val = int(k_values[i])
+        write_inputs(target, a, b_val, k_val, mode, mode2)
 
         scope.arm()
 
@@ -340,7 +360,7 @@ def capture_loop(
                   f"fails={fail_count}")
 
     print(f"[capture] done. total_fail={fail_count}")
-    return traces, b_values, groups, out1_arr, out2_arr
+    return traces, b_values, groups, out1_arr, out2_arr, k_values
 
 
 # ----------------------------------------------------------------------------
@@ -404,6 +424,11 @@ def main():
                    help="Fixed value used by group A (will be reduced mod q)")
     p.add_argument("--seed", type=int, default=0xC0FFEE,
                    help="RNG seed for group/randomness")
+    p.add_argument("--vary", choices=["b", "k"], default="b",
+                   help="'b' (default, TVLA): fixed-vs-random b, k fixed.  "
+                        "'k' (CPA): k varies, b fixed (b_fixed is the secret).")
+    p.add_argument("--k-max", type=int, default=256,
+                   help="When --vary k, sample k uniformly from [0, k-max).")
     args = p.parse_args()
 
     bitpath = Path(args.bitfile).expanduser().resolve()
@@ -455,13 +480,14 @@ def main():
     print(f"[out] results dir: {out_dir}")
 
     try:
-        traces, b_arr, groups, out1_arr, out2_arr = capture_loop(
+        traces, b_arr, groups, out1_arr, out2_arr, k_arr = capture_loop(
             scope, target,
             n_traces=args.num_traces, samples=args.samples,
             a=args.a, k=args.k, mode=args.mode, mode2=args.mode2,
             b_fixed=args.b_fixed, q=q,
             seed=args.seed,
             trigger_mode=args.trigger_mode,
+            vary=args.vary, k_max=args.k_max,
         )
     finally:
         try:
@@ -478,7 +504,7 @@ def main():
         out_dir / "inputs.npz",
         a=np.full(args.num_traces, args.a, dtype=np.uint32),
         b=b_arr,
-        k=np.full(args.num_traces, args.k, dtype=np.uint16),
+        k=k_arr,
         mode=np.full(args.num_traces, args.mode, dtype=np.uint8),
         mode2=np.full(args.num_traces, args.mode2, dtype=np.uint8),
         group=groups,
