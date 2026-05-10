@@ -8,7 +8,8 @@ Setup expected:
 
 Attack:
     For each candidate b_hyp in [0, q):
-        for each trace i:  predicted = HW( (b_hyp * zeta(k_i)) mod 2^32 )
+        CT: for each trace i, predicted = HW( (b_hyp * zeta(k_i)) mod 2^32 )
+        GS: for each trace i, predicted = HW( (((a_i - b_hyp) mod q) * zeta(k_i)) mod 2^32 )
         score(b_hyp) = max_s |Pearson_corr( predicted, traces[:, s] )|
     Plot score vs b_hyp.   The maximum at b_hyp = b_secret demonstrates recovery.
 
@@ -67,6 +68,19 @@ def pearson_corr_vec(x, Y):
     return num / den
 
 
+def predicted_product_lo32(cand, zeta_per_trace, a_arr, q, mode):
+    """RTL-aligned multiplier-output model for a candidate b value."""
+    if mode == 1:
+        mul_input = np.full(zeta_per_trace.shape, np.uint64(cand), dtype=np.uint64)
+    else:
+        cand_u = np.uint64(cand)
+        q_u = np.uint64(q)
+        # Mirrors rtl/unified_bufferfly2.v: sub_ab_s0 = (a>=b) ? a-b : a+q-b.
+        # This has the intended (a-b) mod q meaning only for canonical a<q captures.
+        mul_input = np.where(a_arr >= cand_u, a_arr - cand_u, a_arr + q_u - cand_u)
+    return (mul_input * zeta_per_trace) & np.uint64(0xFFFFFFFF)
+
+
 def main():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("results_dir", type=Path)
@@ -92,6 +106,11 @@ def main():
     mode2 = args.mode2 if args.mode2 is not None else int(metadata.get("fixed_inputs", {}).get("mode2", 0))
     q = KYBER_Q if mode2 == 0 else DILITHIUM_Q
     secret = int(inputs["b"][0])      # we wrote b_fixed everywhere
+    if "a" in inputs.files:
+        a_arr = inputs["a"].astype(np.uint64)
+    else:
+        a_fixed = metadata.get("fixed_inputs", {}).get("a", "0")
+        a_arr = np.full(traces.shape[0], int(a_fixed, 0), dtype=np.uint64)
     print(f"[cpa] mode2={mode2} ({'Kyber' if mode2==0 else 'Dilithium'})  "
           f"mode={mode} ({'CT/zeta' if mode==1 else 'GS/inv_zeta'})  q={q}")
     print(f"[cpa] true secret b = {secret}  (this is what we should recover)")
@@ -124,8 +143,7 @@ def main():
     for start in range(0, n_cand, CHUNK):
         stop = min(start + CHUNK, n_cand)
         for cand in range(start, stop):
-            # predicted intermediate value: (cand * zeta) mod 2^32
-            pred = (np.uint64(cand) * zeta_per_trace) & np.uint64(0xFFFFFFFF)
+            pred = predicted_product_lo32(cand, zeta_per_trace, a_arr, q, mode)
             hw = hamming_weight_u32(pred)
             corr = pearson_corr_vec(hw, x_traces)
             scores[cand] = float(np.max(np.abs(corr)))
@@ -143,7 +161,7 @@ def main():
     print(f"[cpa] true-secret rank: {rank_of_secret}/{n_cand}  (score={scores[secret]:.4f})")
 
     # save winning candidate's full corr trace (for plot)
-    pred = (np.uint64(winner) * zeta_per_trace) & np.uint64(0xFFFFFFFF)
+    pred = predicted_product_lo32(winner, zeta_per_trace, a_arr, q, mode)
     hw = hamming_weight_u32(pred)
     win_corr = pearson_corr_vec(hw, traces)
 

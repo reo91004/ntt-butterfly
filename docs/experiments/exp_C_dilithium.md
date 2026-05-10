@@ -30,8 +30,8 @@ Dilithium의 q (8380417 ≈ 2²³) 는 Kyber의 q (3329 ≈ 2¹²) 보다 훨씬
 | 파라미터 (3개 공통) | 값 |
 |---|---|
 | 알고리즘 | Dilithium (q=8380417), `mode2=1` |
-| `a` | 0xCAFEBABE 고정 |
-| `b` | TVLA fixed-vs-random (b_fixed=0x12345678 % q = 305419896) |
+| `a` | 0xCAFEBABE 입력, host가 q로 reduction 후 3242280을 FPGA에 주입 |
+| `b` | TVLA fixed-vs-random (b_fixed=0x12345678 % q = 3724884) |
 | N | 20000 traces |
 | Sample window | 800 |
 | seed | 0xC0FFEE |
@@ -55,7 +55,12 @@ python3 host/capture_traces.py --bitfile bitstream/cw305_unified_butterfly2_top_
     --mode 1 --mode2 1 --k 16 --samples 800 --no-program
 ```
 
-데이터 위치:
+canonical rerun 데이터 위치:
+- `host/results/20260510_201256_exp_C1b_dil_ct_a_mod_k1_N20k/`
+- `host/results/20260510_201434_exp_C2b_dil_gs_a_mod_k1_N20k/`
+- `host/results/20260510_200859_exp_C2_control_dil_ct_a_mod_k16_N20k/`
+
+legacy 데이터 위치:
 - `host/results/20260510_183408_exp_C1_dilithium_ct_N20k/`
 - `host/results/20260510_183540_exp_C2_dilithium_gs_N20k/`
 - `host/results/20260510_190929_exp_C_control_dil_ct_k16/`
@@ -66,40 +71,39 @@ python3 host/capture_traces.py --bitfile bitstream/cw305_unified_butterfly2_top_
 
 | 실험 | 알고리즘 | mode | k | peak \|t\| @ sample | 누설 sample 수 |
 |---|---|---|---|---|---|
-| A | Kyber | CT | 16 | 91.5 @ 24 | 79 / 800 |
-| B | Kyber | GS | 16 | 92.8 @ 24 | 74 / 800 |
-| C1 | Dilithium | CT | 1 | 89.9 @ 21 | **196 / 800** |
-| C2 | Dilithium | GS | 1 | **97.2** @ 21 | 85 / 800 |
-| **C-control** | Dilithium | CT | **16** | **101.9 @ 24** | **131 / 800** |
+| A2 | Kyber | CT | 16 | 90.3 @ 21 | 65 / 800 |
+| B2 | Kyber | GS | 16 | 88.0 @ 24 | 82 / 800 |
+| C1b | Dilithium | CT | 1 | 93.9 @ 24 | 146 / 800 |
+| C2b | Dilithium | GS | 1 | 96.2 @ 20 | 116 / 800 |
+| **C-control** | Dilithium | CT | **16** | **98.1 @ 21** | **128 / 800** |
 
 ### Top 5 누설 sample (C-control = 가장 엄격한 비교)
 
 ```
-   1  sample 24   t=+101.852   ← Kyber CT k=16과 같은 sample
-   2  sample 21   t=+98.x  
-   3  sample 27   t=+95.x
-   4  sample 18   t=+93.x
-   5  sample 22   t=+90.x
+   1  sample 21   t=+98.126
+   2  sample 24   t=+97.210
+   3  sample 18   t=+95.765
+   4  sample 22   t=+91.723
+   5  sample 27   t=+90.257
 ```
 
 ## 해석
 
 ### 1. 누설 위치는 동일
 
-C-control (k=16) 의 peak sample 24는 **Kyber Exp A의 peak sample과 정확히 일치**.
+C-control (k=16) 의 peak sample 21은 **Kyber Exp A2의 peak sample 21과 일치**.
 즉 알고리즘과 무관하게 **같은 파이프라인 stage** 에서 누설이 발생.
 
-C1 (k=1) 은 sample 21에서 peak — 3 sample 차이는 ROM 출력 ref_zeta 비트 패턴이
-다른 zeta 값을 사용해서 (zeta[1]=4808194 vs zeta[16]=다른 값) multiplier 결과의
-register-갱신 타이밍 미세 차이 가능성.
+C1b (k=1) 은 sample 24에서 peak — zeta 값과 mode에 따라 peak sample은 20-24 사이로
+이동하지만, 모두 cluster 1 영역 안에 있음.
 
 ### 2. 누설 강도는 Dilithium > Kyber (controlled 비교에서도)
 
 엄격한 비교 (k=16, mode=CT 통일):
-- **Kyber CT k=16: peak |t| = 91.5, 79 / 800**
-- **Dilithium CT k=16: peak |t| = 101.9, 131 / 800**
+- **Kyber CT k=16: peak |t| = 90.3, 65 / 800**
+- **Dilithium CT k=16: peak |t| = 98.1, 128 / 800**
 
-→ **같은 k에서도 Dilithium이 약 11% 높은 peak, 누설 sample은 1.7배**.
+→ **같은 k에서도 Dilithium이 약 8.6% 높은 peak, 누설 sample은 약 2.0배**.
 
 원인 분석:
 - Kyber operand: 12-bit (b ∈ [0, 3329))
@@ -114,8 +118,8 @@ register-갱신 타이밍 미세 차이 가능성.
 
 ### 3. C2 (Dilithium GS) 의 특이점
 
-- Peak |t| = 97.2 (가장 높음, Dilithium 안에서)
-- 누설 sample 85 (CT k=1의 196 보다 적음)
+- Peak |t| = 96.2
+- 누설 sample 116 (CT k=1의 146 보다 적음)
 
 CT (`m1 = b`)와 GS (`m1 = (a−b) mod q`) 차이가 sample 분포에 영향:
 - GS는 b 값 자체가 multiplier에 들어가지 않고 `(a−b) mod q` 가 들어감
@@ -133,8 +137,8 @@ unified 디자인에서 **Kyber 사용자도 Dilithium 회로를 공유**. 즉 �
 ## 파일
 
 ```
-host/results/20260510_183408_exp_C1_dilithium_ct_N20k/
-host/results/20260510_183540_exp_C2_dilithium_gs_N20k/
-host/results/20260510_190929_exp_C_control_dil_ct_k16/
+host/results/20260510_201256_exp_C1b_dil_ct_a_mod_k1_N20k/
+host/results/20260510_201434_exp_C2b_dil_gs_a_mod_k1_N20k/
+host/results/20260510_200859_exp_C2_control_dil_ct_a_mod_k16_N20k/
   각각 traces.npy, inputs.npz, metadata.json, tvla_t_stat.npy, tvla_plot.png
 ```

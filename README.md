@@ -316,8 +316,8 @@ python3 host/capture_traces.py \
 Defaults:
 - scope auto-detect (Husky-Plus, Husky, Lite, Pro)
 - `--trigger-mode internal` (assumes the new wrapper with `tio_trigger = busy_reg`)
-- `--target-freq 10e6`, `--adc-mul 10`
-- a-input 0xCAFEBABE, b-fixed 0x12345678, seed 0xC0FFEE for reproducibility
+- `--target-freq 96e6`, `--adc-mul 2`
+- a-input 0xCAFEBABE is reduced mod q before FPGA write, b-fixed 0x12345678 is reduced mod q, seed 0xC0FFEE for reproducibility
 - output → `host/results/<timestamp>_kyber_ct_b_first/`
 
 ### 7.3 Analyze for leakage
@@ -348,8 +348,8 @@ A peak with `|t| > 4.5` flags input-dependent leakage at that sample.
 --num-traces N                  default 2000
 --samples N                     default 400 (internal) — go to ~50000 for host-toggle
 --gain-db F                     default 25
---target-freq F                 default 10e6   (CW305 usb_clk measured)
---adc-mul N                     default 10  — ADC = target_freq * adc_mul
+--target-freq F                 default 96e6   (CW305 usb_clk target)
+--adc-mul N                     default 2  — ADC = target_freq * adc_mul
 --label STR                     becomes part of results-dir name
 --a, --b-fixed, --k, --mode, --mode2, --seed
                                 input controls
@@ -365,11 +365,10 @@ it. Pass `--scope-sn` to override.
 
 ## 9. Known issues and caveats
 
-1. **Husky PLL frequency rounding.** With `--target-freq 96e6 --adc-mul 4`, Husky may
-   report "Could not calculate PLL settings" because its LMK PLL cannot synthesize that
-   ratio at the spec-clean ADC range. The fix used here is to set `--target-freq 10e6`
-   (the actual measured `usb_clk` on CW305) and `--adc-mul 10`, giving a 100 MHz ADC
-   that locks cleanly.
+1. **Husky PLL frequency rounding.** The corrected capture setup uses
+   `--target-freq 96e6 --adc-mul 2`. Some ChipWhisperer versions still print transient
+   PLL rounding warnings while settling, but the saved metadata should show
+   `pll_locked=true` and an ADC frequency near 192 MHz.
 
 2. **Trace alignment depends on the wrapper change.** If the .bit on the FPGA was built
    from the *old* wrapper (`tio_trigger = usb_trigger`), `--trigger-mode internal` will

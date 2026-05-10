@@ -17,11 +17,11 @@
 
 | 실험 | 주제 | bitstream 동일? | secret? | 핵심 결과 |
 |---|---|---|---|---|
-| [A](exp_A_baseline_kyber_ct.md) | 대용량 베이스라인 (Kyber CT) | yes | b varies | peak \|t\|=91.5, sample 16-30 (cluster1) + 39-54 (cluster2) 누설 검출 |
-| [B](exp_B_kyber_gs.md) | Kyber GS 모드 비교 | yes | b varies | peak \|t\|=92.8, **CT와 동일한 패턴** — mode-dispatch가 아닌 공유 datapath 누설 |
-| [C](exp_C_dilithium.md) | Dilithium CT/GS + control | yes | b varies | k=16에서 peak \|t\|=101.9 (Kyber 91.5 대비 ↑), **Dilithium이 더 누설** — 더 넓은 operand 폭 영향 |
-| [D](exp_D_bit_specific_tvla.md) | 비트별 TVLA | (A 데이터 재분석) | b varies | **Kyber 12 used bits + Dilithium 23 used bits 모두 누설** — Hamming-weight 모델 강력히 시사 |
-| [E](exp_E_cpa.md) | CPA — 실제 비밀 복구 | yes (vary k) | b fixed=1291 | True secret rank 120/3329 (top 3.6%) — search space 30× 축소, 단일 sample top-1 복구는 모델 한계로 미달 |
+| [A](exp_A_baseline_kyber_ct.md) | 대용량 베이스라인 (Kyber CT) | yes | b varies | canonical rerun peak \|t\|=90.3 @ sample 21, 65/800 samples 누설 |
+| [B](exp_B_kyber_gs.md) | Kyber GS 모드 비교 | yes | b varies | canonical rerun peak \|t\|=88.0 @ sample 24, CT와 같은 cluster 영역 |
+| [C](exp_C_dilithium.md) | Dilithium CT/GS + control | yes | b varies | canonical rerun peak \|t\|=93.9-98.1, Kyber보다 더 넓은 누설 window |
+| [D](exp_D_bit_specific_tvla.md) | 비트별 TVLA | (A/B/C 데이터 재분석) | random-b only | fixed half 제거 후 Kyber 4-5 bits, Dilithium 3-11 bits만 임계 통과 — "전 bit 균등 HW" 결론 철회 |
+| [E](exp_E_cpa.md) | CPA — 공격 가능성 점검 | yes (vary k) | b fixed=1291 | canonical rerun에서 true rank 1550/1829 수준 — naive HW CPA exploitable 결론 미확인 |
 
 부록: [검증 보고서](verification.md) — Sequential thinking으로 5개 실험 정합성 재검증.
 
@@ -33,22 +33,24 @@ unified butterfly2 디자인은 Kyber와 Dilithium의 NTT butterfly를 단일 mo
 datapath에 통합한 구조입니다. 핵심 연구 질문: 이 통합이 **분리된 단일 알고리즘 구현**
 에서는 없었을 부채널 노출을 만들어내는가?
 
-**현재까지의 답**: unified datapath는 **입력에 강하게 의존하는 전력 정보를 새고 있음**:
+**현재까지의 답**: canonical input (`a,b < q`) 조건에서도 unified datapath는
+**입력에 강하게 의존하는 전력 정보를 새고 있음**:
 
-- N=20000 trace에서 TVLA peak |t| ≈ 90+ 도달. 표준 임계값 4.5를 압도. butterfly의
+- N=20000 trace에서 TVLA peak |t| ≈ 88-98 도달. 표준 임계값 4.5를 압도. butterfly의
   첫 몇 cycle 안에서 즉시 검출됨.
 - 누설은 **알고리즘별로 강도가 다름** (Dilithium > Kyber, 더 넓은 operand가 더 많은
   bit-flip을 만들어서) **하지만 위치는 동일** — 4가지 알고리즘×모드 조합에서 누설
   파이프라인 stage가 같음.
 - 누설 패턴은 **multiplier 출력 + Montgomery 후반부 + 최종 출력 register의
-  Hamming-weight 누설**과 일치. 두 클러스터로 분리:
+  operand-dependent 누설**과 일치. 두 클러스터로 분리:
   - sample 16-30: 파이프라인이 출력 register에 도달하기까지의 영역
   - sample 39-54: 출력값이 read-mux로 fanout되는 영역
 
-**실제 공격 가능성**: 교과서적인 Hamming-weight CPA를 단일 sample에 적용하면 Kyber의
-3329개 후보 secret을 top 3.6%로 좁힘 (search space 30× 축소). 완전 복구에는 못
-이르렀지만 **누설이 원리적으로 exploitable함은 확인**. 프로파일 기반 attack
-(template) 으로는 거의 확실히 성공 가능.
+**실제 공격 가능성**: legacy capture (`a=0xCAFEBABE`를 q로 줄이지 않고 주입) 에서는
+단순 HW CPA가 후보 공간을 줄였지만, canonical rerun에서는 true rank가 random guess와
+비슷해졌습니다. 따라서 현재 문서의 보수적 결론은 **TVLA fail은 확실하나 naive CPA
+복구 가능성은 미확인**입니다. 공격 효율 평가는 profiling/template 또는 다중 모델
+재실험이 필요합니다.
 
 ---
 
@@ -63,6 +65,7 @@ datapath에 통합한 구조입니다. 핵심 연구 질문: 이 통합이 **분
 | Trigger | `internal` (busy_reg → tio_trigger → scope tio4) | sub-cycle 정렬 |
 | Sample window | 800 samples | butterfly 전체 + post-pipeline idle 포함 |
 | RNG seed | 0xC0FFEE | A/B/C에서 동일 — paired 비교 가능 |
+| Host input normalization | `a`와 `b_fixed`를 q로 reduction 후 주입 | RTL의 butterfly 산술 전제 (`a,b < q`) 와 정합 |
 
 ## 파이프라인 매핑 (sample → cycle)
 
@@ -95,8 +98,8 @@ read_mux로 fanout되며 register 안정화되는 영역.
 
 `host/results/<timestamp>_<label>/` 폴더 안에 다음이 저장됨:
 - `traces.npy` — raw ADC traces (N, samples) float32
-- `inputs.npz` — per-trace a, b, k, mode, mode2, group, out1, out2
+- `inputs.npz` — per-trace a, a_raw, b, k, mode, mode2, group, out1, out2
 - `metadata.json` — 실험 조건, scope 설정, bitfile MD5
 - `tvla_t_stat.npy`, `tvla_plot.png` — 분석 결과 (재생 가능)
-- (Exp D) `spec_tvla_*.npy`, `spec_tvla_bits.png`
+- (Exp D) `spec_tvla_random_*.npy`, `spec_tvla_random_bits.png`
 - (Exp E) `cpa_scores.npy`, `cpa_winning_corr.npy`, `cpa_plot.png`

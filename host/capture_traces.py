@@ -301,10 +301,10 @@ def capture_loop(
 
     if vary == "b":
         secret_summary = (f"vary=b  group A=fixed b={hex(b_fixed % q)}, "
-                          f"group B=random b in [0,{q})  (k fixed at {k})")
+                          f"group B=random b in [0,{q})  (a={hex(a)}, k fixed at {k})")
     else:
         secret_summary = (f"vary=k  k uniform in [0,{k_max})  "
-                          f"(b fixed at {hex(b_fixed % q)} = the SECRET)")
+                          f"(a={hex(a)}, b fixed at {hex(b_fixed % q)} = the SECRET)")
     print(f"[capture] starting {n_traces} traces, {samples} samples each "
           f"(trigger={trigger_mode}, {secret_summary})")
     t0 = time.time()
@@ -403,8 +403,8 @@ def main():
                         "'host-toggle' = legacy bitstream where tio_trigger=usb_trigger.")
     p.add_argument("--num-traces", type=int, default=2000)
     p.add_argument("--samples", type=int, default=400,
-                   help="ADC samples per trace. With --trigger-mode internal, ~288 "
-                        "covers the 72-cycle butterfly at adc_mul=4. With host-toggle "
+                   help="ADC samples per trace. With --trigger-mode internal, ~144 "
+                        "covers the 72-cycle butterfly at adc_mul=2. With host-toggle "
                         "you need much wider (e.g. 50000) to absorb USB-latency gap.")
     p.add_argument("--gain-db",     type=float, default=25.0)
     p.add_argument("--target-freq", type=float, default=DEFAULT_TARGET_FREQ_HZ,
@@ -437,6 +437,11 @@ def main():
         return 2
 
     q = KYBER_Q if args.mode2 == 0 else DILITHIUM_Q
+    a_raw = args.a & 0xFFFFFFFF
+    a_mod = args.a % q
+    if a_raw != a_mod:
+        print(f"[inputs] reducing a modulo q for RTL canonical input: "
+              f"0x{a_raw:08x} -> {a_mod} (q={q})")
 
     import chipwhisperer as cw
 
@@ -483,7 +488,7 @@ def main():
         traces, b_arr, groups, out1_arr, out2_arr, k_arr = capture_loop(
             scope, target,
             n_traces=args.num_traces, samples=args.samples,
-            a=args.a, k=args.k, mode=args.mode, mode2=args.mode2,
+            a=a_mod, k=args.k, mode=args.mode, mode2=args.mode2,
             b_fixed=args.b_fixed, q=q,
             seed=args.seed,
             trigger_mode=args.trigger_mode,
@@ -502,7 +507,8 @@ def main():
     np.save(out_dir / "traces.npy", traces)
     np.savez(
         out_dir / "inputs.npz",
-        a=np.full(args.num_traces, args.a, dtype=np.uint32),
+        a=np.full(args.num_traces, a_mod, dtype=np.uint32),
+        a_raw=np.full(args.num_traces, a_raw, dtype=np.uint32),
         b=b_arr,
         k=k_arr,
         mode=np.full(args.num_traces, args.mode, dtype=np.uint8),
@@ -523,17 +529,20 @@ def main():
         "scope_settings":  scope_settings,
         "trigger_mode":    args.trigger_mode,
         "fixed_inputs":    {
-            "a":     f"0x{args.a:08x}",
+            "a":     f"0x{a_mod:08x}",
+            "a_raw": f"0x{a_raw:08x}",
+            "a_mod_q": int(a_mod),
             "k":     args.k,
             "mode":  args.mode,
             "mode2": args.mode2,
             "q":     q,
         },
         "secret_strategy": {
-            "variable":     "b",
-            "fixed_value":  f"0x{args.b_fixed & 0xFFFFFFFF:08x}",
-            "fixed_mod_q":  int(args.b_fixed % q),
-            "random_range": [0, q],
+            "variable":       args.vary,
+            "b_fixed_value":  f"0x{args.b_fixed & 0xFFFFFFFF:08x}",
+            "b_fixed_mod_q":  int(args.b_fixed % q),
+            "random_b_range": [0, q] if args.vary == "b" else None,
+            "random_k_range": [0, args.k_max] if args.vary == "k" else None,
         },
         "seed":         args.seed,
         "bitfile":      str(bitpath),

@@ -281,10 +281,11 @@ register 갱신 전력 ∝ HD(이전 값, 새 값) **가 정확한 모델**.
 모델이 곧 HD 모델.
 
 우리 디자인에서 `mul_s2` 같은 register는 매 cycle마다 갱신되어 새 값으로 채워지지만,
-butterfly 시작 시점 (busy_reg=1로 켜진 직후) 의 첫 갱신은 이전 idle 상태에서
-들어옴. 그래서 **첫 cycle에 한해 HW 모델이 잘 맞음**.
+butterfly 시작 시점 (busy_reg=1로 켜진 직후) 의 첫 갱신은 이전 idle 상태의 영향을
+강하게 받는다. 그래서 HW 계열 모델이 cluster 위치를 설명하는 데 유용할 수 있다.
 
-이게 우리 실험에서 HW(b·ζ) 가 강한 상관을 보인 이유.
+다만 corrected Exp D/E 이후에는 단순 HW 모델을 확정하지 않는다. 현재는 더 보수적으로
+operand-dependent leakage라고 표현한다.
 
 ---
 
@@ -449,26 +450,27 @@ TVLA peak은 sample 16-30이지 sample 6-7 (= C4) 가 아닙니다. 왜?
 
 ### 증거 2: bit-specific TVLA (Exp D)
 
-`b` 의 12개 비트 각각에 대해 따로 TVLA를 돌려 보면:
+corrected Exp D는 fixed-vs-random 데이터에서 random half만 골라 `b`의 각 비트를
+재그룹화했다. Kyber CT k=16의 결과:
 
 ```
-bit 0:  peak |t| = 70.4 @ sample 21
-bit 1:  peak |t| = 69.1 @ sample 24
-bit 2:  peak |t| = 69.8 @ sample 24
-...
-bit 9:  peak |t| = 75.5 @ sample 24  ← 살짝 가장 높음
-bit 10: peak |t| = 65.9 @ sample 24
-bit 11: peak |t| = 65.3 @ sample 24
+bit 10: peak |t| = 11.9 @ sample 18
+bit  9: peak |t| = 11.6 @ sample 18
+bit 11: peak |t| =  5.9 @ sample 18
+bit  7: peak |t| =  5.7 @ sample 15
+나머지 사용 bit 대부분은 임계값 4.5 이하
 ```
 
-**모든 비트가 같은 sample 영역에서 누설** + **누설 강도가 거의 비슷**. 이건 두 가지를 의미:
+초기 분석은 fixed half를 포함해 모든 bit가 큰 |t|를 갖는 것처럼 보였지만, corrected
+분석에서는 그렇지 않다. 의미는 두 가지:
 
-1. **단일 leakage point**: 모든 비트가 한 register update 안에 노출. mul_s2 또는 그 직후 register 후보.
-2. **Hamming weight 모델 검증**: 비트 위치가 개별적으로 누설하는 게 아니라 모든 비트가 합쳐진 HW로 누설. 만약 specific-bit 누설이라면 일부 비트가 매우 강하고 나머지는 약했을 것.
+1. 누설은 여전히 cluster 1 sample 영역에 집중된다.
+2. 하지만 **모든 bit가 균등한 HW leakage**라는 결론은 철회한다. 현재는 특정 bit와
+   특정 pipeline sample에 집중되는 operand-dependent leakage로 보는 것이 맞다.
 
 ### 증거 3: CPA 모델 비교 (Exp E)
 
-여러 후보 leakage 모델로 실제 측정 trace와의 상관계수를 계산:
+legacy capture에서는 여러 후보 leakage 모델 중 `HW(b·ζ)`가 가장 큰 상관을 보였다:
 
 | 모델 (true secret b=1291 가정) | best sample | \|r\| max |
 |---|---|---|
@@ -483,7 +485,11 @@ bit 11: peak |t| = 65.3 @ sample 24
 - **HW(b·ζ) 가 sample 18에서 가장 강함** → cluster 1의 정체는 **multiplier 출력 (mul_s2) + 그 직후 Mont 1단 register들의 b·ζ 정보 누설**
 - **HW(t_after_mr) 가 sample 51에서** → cluster 2의 정체는 **Montgomery 최종 결과 (r_s4) 가 read_mux로 fanout되는 단계의 누설**
 
-→ 두 cluster의 **물리적 정체가 다름**. cluster 1은 곱셈 직후 register들, cluster 2는 modular reduction 결과 register들.
+canonical rerun에서는 naive single-sample CPA가 secret 후보 공간을 줄이지 못했다.
+따라서 이 표는 "cluster 위치 후보를 설명하는 참고 모델"이지, canonical 조건에서의
+복구 성공 증거는 아니다.
+
+→ 두 cluster의 **물리적 정체 후보가 다름**. cluster 1은 곱셈 직후 register들, cluster 2는 modular reduction 결과 register들.
 
 ---
 
@@ -566,14 +572,14 @@ trace 평균** + **두 그룹 비교 (TVLA)** 하면:
 **나쁜 소식**:
 - 우리 unified butterfly2는 **현재 상태로 부채널에 매우 취약**
 - |t| = 91 은 NIST PQC SCA 평가에서 즉시 fail
-- CPA로 search space 14배 축소 가능 → 더 정교한 공격 (template) 으로는 완전 복구 가능성 큼
+- canonical input에서 naive CPA 복구는 실패했지만, TVLA fail 자체는 매우 강함
 - Kyber 사용 시나리오에서도 같은 회로를 Dilithium 모드로 돌릴 수 있어, **공격자가
   더 누설 잘 나오는 모드 (Dilithium)** 를 선택할 수 있음 (downgrade 공격)
 
 **좋은 소식 (방어 측면)**:
 - 누설점이 명확히 식별됨 → 정확히 거기만 보호하면 됨
-- HW 누설로 확정 → boolean masking 같은 표준 대응책 적용 가능
-- mode 자체는 leak-clean → 단일 마스킹 스킴이 CT/GS 양쪽 적용 가능
+- 단순 HW로 확정되지는 않았으므로, masking/template 평가를 함께 설계해야 함
+- CT/GS 모두 공유 datapath에서 누설되므로, 방어책은 mode별 제어부보다 datapath 보호에 집중해야 함
 
 ### 대응책 옵션
 

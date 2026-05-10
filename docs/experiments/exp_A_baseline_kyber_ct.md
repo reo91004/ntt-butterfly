@@ -23,7 +23,7 @@ N으로 수행:
 | 알고리즘 | Kyber (q=3329) |
 | 모드 | CT (Cooley-Tukey, forward NTT), `mode=1`, `mode2=0` |
 | Zeta 인덱스 | k=16 (zeta = ROM[256+16], Kyber 실제 사용 범위 0~127 내) |
-| `a` | 0xCAFEBABE (모든 trace에서 고정) |
+| `a` | 0xCAFEBABE 입력, host가 q로 reduction 후 1409를 FPGA에 주입 |
 | `b` | TVLA 스타일: 50% 고정 (0x12345678 % 3329 = 791), 50% 균등 랜덤 [0, 3329) |
 | N | 20000 traces |
 | Sample window | 800 ADC samples |
@@ -35,52 +35,57 @@ N으로 수행:
 python3 host/capture_traces.py \
     --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
     --num-traces 20000 --label exp_A_kyber_ct_N20k \
-    --mode 1 --mode2 0 --k 16 --samples 800 --no-program
+    --mode 1 --mode2 0 --k 16 --samples 800
 
 python3 host/tvla.py host/results/<timestamp>_exp_A_kyber_ct_N20k/
 ```
 
-데이터 위치: `host/results/20260510_183101_exp_A_kyber_ct_N20k/`
+canonical rerun 데이터 위치: `host/results/20260510_200546_exp_A2_kyber_ct_a_mod_N20k/`
+
+legacy 데이터 위치: `host/results/20260510_183101_exp_A_kyber_ct_N20k/`
+(`a=0xCAFEBABE`가 q로 줄지 않고 들어간 초기 실험. TVLA 누설 검출 자체는 참고 가능하지만
+butterfly 출력과 GS 비교 해석에는 사용하지 않음.)
 
 ## 결과
 
 | 지표 | 값 |
 |---|---|
 | 캡처 실패 | 0 / 20000 |
-| 캡처 속도 | ~272 trace/s |
-| Peak \|t\| | **91.506 @ sample 24** |
-| \|t\| > 4.5 통과 sample 수 | 79 / 800 |
-| Cluster 1 (양수 t) | sample 15–30, peak +91.5 |
-| Cluster 2 (음수 t) | sample 39–54, peak −65.9 |
+| 캡처 속도 | ~276 trace/s |
+| Peak \|t\| | **90.321 @ sample 21** |
+| \|t\| > 4.5 통과 sample 수 | 65 / 800 |
+| Cluster 1 (양수 t) | sample 15–30, peak +90.3 |
+| Cluster 2 (음수 t) | sample 39–54 영역에 유지 |
+| 출력 범위 검증 | out1/out2 모두 `< q` |
 
 상위 10개 누설 sample (|t| 기준):
 
 ```
 순위  sample   t-stat
-   1      24   +91.506
-   2      21   +90.710
-   3      18   +84.629
-   4      22   +79.925
-   5      27   +77.993
-   6      19   +76.196
-   7      25   +71.996
-   8      30   +65.955
-   9      45   -65.917
-  10      51   -65.805
+   1      21   +90.321
+   2      18   +85.342
+   3      24   +84.750
+   4      22   +79.292
+   5      19   +77.892
+   6      27   +73.725
+   7      25   +72.494
+   8      45   -63.557
+   9      51   -62.637
+  10      30   +59.812
 ```
 
 ## 해석
 
-### 1. 스케일링 검증 통과
+### 1. canonical input에서 누설 재확인
 
-```
-N=2000  → peak |t| = 29.267
-N=20000 → peak |t| = 91.506
-  실측 비율 = 91.506 / 29.267 = 3.13
-  이론값  √(20000/2000) = √10 ≈ 3.16
-```
+초기 실험은 `a=0xCAFEBABE`를 그대로 FPGA에 주입했지만 RTL의 modular add/sub는
+`a,b < q`를 전제로 한 1회 보정 구조입니다. 따라서 host capture 코드를 수정해 `a % q`
+를 주입하도록 바꾸고, 동일 조건으로 다시 캡처했습니다.
 
-비율이 √N과 1% 이내 일치. **누설은 통계적으로 진짜이고, 결정론적이며, 우연이 아님**.
+새 canonical rerun에서도 peak |t|=90.321로 임계값 4.5를 압도하므로,
+**입력 의존 전력 누설은 정합 조건에서도 재현됩니다**. 다만 기존 N=2000→20000 scaling
+검증은 legacy 입력 조건에서의 기록으로만 남기고, canonical 조건의 scaling은 별도
+반복이 필요합니다.
 
 ### 2. 누설 위치
 
@@ -106,19 +111,20 @@ TVLA 그룹화는 **`b`** (butterfly 두 번째 operand) 에 따라 했음. 누�
 - `t_after_mr` (Montgomery-reduced 출력, Kyber 범위 [0, 3328])
 - `out1, out2` (최종 모듈러-q 결과)
 
-Exp D (비트별 TVLA) 에 따르면 누설은 **multiplier 출력의 Hamming weight**와 일치.
-특정 bit이나 Hamming distance가 아님.
+Exp D의 corrected random-only 재분석에 따르면, fixed half를 제거하면 모든 bit가
+균등하게 누설되지는 않습니다. 따라서 현재는 **operand-dependent leakage**로 표현하고,
+단순 HW 모델 확정은 철회합니다.
 
 ## 파일
 
 ```
-host/results/20260510_183101_exp_A_kyber_ct_N20k/
+host/results/20260510_200546_exp_A2_kyber_ct_a_mod_N20k/
 ├── traces.npy       (20000, 800) float32  — raw ADC
-├── inputs.npz       per-trace a, b, k, mode, mode2, group, out1, out2
+├── inputs.npz       per-trace a, a_raw, b, k, mode, mode2, group, out1, out2
 ├── metadata.json    실험 전체 기록 (scope settings, bitfile MD5)
 ├── tvla_t_stat.npy  (800,) sample별 Welch's t
 ├── tvla_plot.png    ±4.5 임계 표시된 시각화
-└── spec_tvla_*.npy/png  (Exp D 에서 추가)
+└── spec_tvla_random_*.npy/png  (Exp D 에서 추가)
 ```
 
 ## 비교 기준 역할
