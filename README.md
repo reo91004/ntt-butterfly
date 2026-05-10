@@ -5,6 +5,10 @@ NTT (Number Theoretic Transform) used by both **Kyber (ML-KEM)** and **Dilithium
 the two NIST post-quantum cryptography standards based on lattices — together with a
 ChipWhisperer-based capture/analysis pipeline for **side-channel leakage assessment** on it.
 
+> **이 프로젝트를 처음 보시는 분**: [docs/leakage_explained.md](docs/leakage_explained.md)
+> 가 친절한 입문서입니다. 부채널 공격, NTT butterfly, FPGA 파이프라인, 누설점 식별까지
+> 그림과 비유로 설명합니다. 이후 [docs/experiments/](docs/experiments/) 의 각 실험 문서로.
+
 The design is built for the [ChipWhisperer CW305](https://rtfm.newae.com/Targets/CW305%20Artix%20FPGA/)
 target board. The wrapper exposes a USB register interface for the host and routes a
 trigger signal to the 20-pin connector so a CW capture scope (CW-Lite, CW-Pro, Husky,
