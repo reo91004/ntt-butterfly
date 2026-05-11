@@ -25,7 +25,9 @@
 | [F](exp_F_input_write_isolation.md) | 입력 write path 분리 | temporary variants | b write varies | core/S7를 끊어도 peak 유지, arm 직전 fixed B scrub 시 peak 소멸 — 현재 dominant peak는 `REG_B` write/input path |
 | [G](exp_G_core_preload_isolation.md) | preload/scrub core-only 분리 | yes | b_core varies | `REG_B` start 값 fixed인데도 core-only TVLA peak `|t|=29.8-33.7` — butterfly core 누설 확인 |
 
-부록: [검증 보고서](verification.md) — Sequential thinking으로 실험 정합성 재검증.
+부록:
+[현재 결론 요약](current_leakage_summary.md) — 목표, 실험 흐름, 최종 결론을 쉽게 정리.
+[검증 보고서](verification.md) — Sequential thinking으로 실험 정합성 재검증.
 
 ---
 
