@@ -31,7 +31,10 @@ Stored under  results/<timestamp>_<label>/  :
     traces.npy        (N, samples) float32
     inputs.npz        a, b, b_first_write, b_effective_start, k, mode, mode2,
                       b_preload_write, b_core_start, b_mask_share0,
-                      b_mask_share1, group, out1, out2 (all per-trace)
+                      b_mask_share1, a_rtl_share0, a_rtl_share1,
+                      b_rtl_share0, b_rtl_share1, out1_share0,
+                      out1_share1, out2_share0, out2_share1, group,
+                      out1, out2 (all per-trace)
     metadata.json     experiment + scope settings + device serials
 """
 
@@ -48,7 +51,8 @@ import numpy as np
 
 from sca_config import (
     REG_A, REG_B, REG_K, REG_CTRL, REG_STATUS, REG_OUT1, REG_OUT2,
-    REG_ID, DONE_MASK, BUSY_MASK,
+    REG_A_SHARE1, REG_B_SHARE1, REG_OUT1_SHARE1, REG_OUT2_SHARE1,
+    REG_MASK_CTRL, REG_ID, DONE_MASK, BUSY_MASK,
     KYBER_Q, DILITHIUM_Q,
     EXCLUDE_SCOPE_SERIAL, RESULTS_ROOT,
     SCOPE_NAMES, DEFAULT_TARGET_FREQ_HZ, DEFAULT_ADC_MUL,
@@ -201,6 +205,10 @@ def write_inputs(target, a, b, k, mode, mode2):
     write_u8(target, REG_CTRL, (mode & 1) | ((mode2 & 1) << 1))
 
 
+def write_mask_control(target, enabled):
+    write_u8(target, REG_MASK_CTRL, 0x01 if enabled else 0x00)
+
+
 def write_experiment_control(
     target, mode, mode2, use_b_preload, force_core_b_zero,
     trigger_delay_cycles, route_b_write_to_preload=False,
@@ -255,6 +263,16 @@ def b_preload_plan(b_values, b_preload_policy, rng, q):
             return share0.copy(), share0, share1
         return share1.copy(), share0, share1
     raise ValueError(f"unknown b_preload_policy={b_preload_policy!r}")
+
+
+def additive_share_plan(values, rng, q):
+    """Return random additive shares (share0 + share1) mod q == values."""
+    values = np.asarray(values, dtype=np.uint32)
+    share1 = rng.integers(0, q, size=values.shape, dtype=np.uint32)
+    share0 = (
+        (values.astype(np.int64) - share1.astype(np.int64)) % int(q)
+    ).astype(np.uint32)
+    return share0, share1
 
 
 def b_core_start_plan(b_effective_start, b_preload_write, use_b_preload, force_core_b_zero):
@@ -471,6 +489,7 @@ def capture_loop(
     b_preload_policy="none",
     use_b_preload=False,
     force_core_b_zero=False,
+    rtl_masked=False,
     trigger_delay_cycles=0,
     pre_arm_delay_ms=0.0,
     poll_interval=0.0005, poll_timeout=0.5,
@@ -506,9 +525,29 @@ def capture_loop(
         b_effective_start, b_preload_write, use_b_preload, force_core_b_zero
     )
 
+    a_values = np.full(n_traces, np.uint32(a % q), dtype=np.uint32)
+    if rtl_masked:
+        a_rtl_share0, a_rtl_share1 = additive_share_plan(a_values, rng, q)
+        b_rtl_share0, b_rtl_share1 = additive_share_plan(b_values, rng, q)
+        b_first_write = b_rtl_share0.copy()
+        b_effective_start = b_rtl_share0.copy()
+        b_preload_write = np.zeros(n_traces, dtype=np.uint32)
+        b_core_start = b_rtl_share0.copy()
+        b_mask_share0 = b_rtl_share0.copy()
+        b_mask_share1 = b_rtl_share1.copy()
+    else:
+        a_rtl_share0 = a_values.copy()
+        a_rtl_share1 = np.zeros(n_traces, dtype=np.uint32)
+        b_rtl_share0 = b_core_start.copy()
+        b_rtl_share1 = np.zeros(n_traces, dtype=np.uint32)
+
     traces   = np.empty((n_traces, samples), dtype=np.float32)
     out1_arr = np.empty(n_traces, dtype=np.uint32)
     out2_arr = np.empty(n_traces, dtype=np.uint32)
+    out1_share0_arr = np.empty(n_traces, dtype=np.uint32)
+    out1_share1_arr = np.empty(n_traces, dtype=np.uint32)
+    out2_share0_arr = np.empty(n_traces, dtype=np.uint32)
+    out2_share1_arr = np.empty(n_traces, dtype=np.uint32)
 
     if trigger_mode == "host-toggle":
         if not hasattr(target, "usb_trigger_toggle"):
@@ -522,6 +561,7 @@ def capture_loop(
         use_b_preload, force_core_b_zero, trigger_delay_cycles,
         route_b_write_to_preload=False,
     )
+    write_mask_control(target, rtl_masked)
 
     if vary == "b":
         secret_summary = (f"vary=b  group A=fixed b={hex(b_fixed % q)}, "
@@ -541,6 +581,7 @@ def capture_loop(
     print(f"[capture] b_load_policy={b_load_policy}: {load_summary}")
     print(f"[capture] preload_policy={b_preload_policy}, "
           f"use_b_preload={use_b_preload}, force_core_b_zero={force_core_b_zero}, "
+          f"rtl_masked={rtl_masked}, "
           f"trigger_delay_cycles={trigger_delay_cycles}, exp_ctrl=0x{exp_ctrl:02x}")
     t0 = time.time()
     fail_count = 0
@@ -551,7 +592,19 @@ def capture_loop(
         b_preload = int(b_preload_write[i])
         k_val = int(k_values[i])
 
-        if b_preload_policy != "none":
+        if rtl_masked:
+            write_u32(target, REG_A, int(a_rtl_share0[i]))
+            write_u32(target, REG_A_SHARE1, int(a_rtl_share1[i]))
+            write_u32(target, REG_B, int(b_rtl_share0[i]))
+            write_u32(target, REG_B_SHARE1, int(b_rtl_share1[i]))
+            target.fpga_write(REG_K, [k_val & 0xFF, (k_val >> 8) & 0x03])
+            write_experiment_control(
+                target, mode, mode2,
+                use_b_preload, force_core_b_zero, trigger_delay_cycles,
+                route_b_write_to_preload=False,
+            )
+            write_mask_control(target, True)
+        elif b_preload_policy != "none":
             write_experiment_control(
                 target, mode, mode2,
                 use_b_preload, force_core_b_zero, trigger_delay_cycles,
@@ -564,20 +617,22 @@ def capture_loop(
                 route_b_write_to_preload=False,
             )
 
-        write_inputs(target, a, b_first, k_val, mode, mode2)
+        if not rtl_masked:
+            write_inputs(target, a, b_first, k_val, mode, mode2)
 
-        # F11 diagnostic path: preserve the fixed-vs-random group labels and
-        # the initial REG_B write, but make the last REG_B write before arm
-        # fixed. If the TVLA peak disappears, the previous peak was dominated
-        # by the input/write path state rather than the arithmetic core.
-        if b_load_policy in ("constant", "random-then-scrub"):
-            write_u32(target, REG_B, b_effective)
+            # F11 diagnostic path: preserve the fixed-vs-random group labels and
+            # the initial REG_B write, but make the last REG_B write before arm
+            # fixed. If the TVLA peak disappears, the previous peak was dominated
+            # by the input/write path state rather than the arithmetic core.
+            if b_load_policy in ("constant", "random-then-scrub"):
+                write_u32(target, REG_B, b_effective)
 
-        write_experiment_control(
-            target, mode, mode2,
-            use_b_preload, force_core_b_zero, trigger_delay_cycles,
-            route_b_write_to_preload=False,
-        )
+            write_experiment_control(
+                target, mode, mode2,
+                use_b_preload, force_core_b_zero, trigger_delay_cycles,
+                route_b_write_to_preload=False,
+            )
+            write_mask_control(target, False)
 
         if pre_arm_delay_ms > 0:
             time.sleep(pre_arm_delay_ms / 1000.0)
@@ -614,8 +669,22 @@ def capture_loop(
                 f"trace {i}: scope returned {wave.shape[0]} samples, expected {samples}"
             )
         traces[i, :] = wave.astype(np.float32)
-        out1_arr[i]  = read_u32(target, REG_OUT1) & 0xFFFFFFFF
-        out2_arr[i]  = read_u32(target, REG_OUT2) & 0xFFFFFFFF
+        out1_s0 = read_u32(target, REG_OUT1) & 0xFFFFFFFF
+        out2_s0 = read_u32(target, REG_OUT2) & 0xFFFFFFFF
+        if rtl_masked:
+            out1_s1 = read_u32(target, REG_OUT1_SHARE1) & 0xFFFFFFFF
+            out2_s1 = read_u32(target, REG_OUT2_SHARE1) & 0xFFFFFFFF
+            out1_arr[i] = np.uint32((int(out1_s0) + int(out1_s1)) % int(q))
+            out2_arr[i] = np.uint32((int(out2_s0) + int(out2_s1)) % int(q))
+        else:
+            out1_s1 = 0
+            out2_s1 = 0
+            out1_arr[i] = np.uint32(out1_s0)
+            out2_arr[i] = np.uint32(out2_s0)
+        out1_share0_arr[i] = np.uint32(out1_s0)
+        out1_share1_arr[i] = np.uint32(out1_s1)
+        out2_share0_arr[i] = np.uint32(out2_s0)
+        out2_share1_arr[i] = np.uint32(out2_s1)
 
         # Clear done bit so the next iteration's poll starts cleanly.
         write_u8(target, REG_STATUS, 0x02)
@@ -632,6 +701,8 @@ def capture_loop(
         traces, b_values, groups, out1_arr, out2_arr, k_values,
         b_first_write, b_effective_start, b_preload_write, b_core_start,
         b_mask_share0, b_mask_share1,
+        a_rtl_share0, a_rtl_share1, b_rtl_share0, b_rtl_share1,
+        out1_share0_arr, out1_share1_arr, out2_share0_arr, out2_share1_arr,
     )
 
 
@@ -740,6 +811,11 @@ def main():
     p.add_argument("--force-core-b-zero", action="store_true",
                    help="Debug negative control: on start, force b_core=0 even if "
                         "--use-b-preload is set.")
+    p.add_argument("--rtl-masked", action="store_true",
+                   help="Enable the RTL-level additive masked butterfly. "
+                        "REG_A/REG_B carry share0; REG_A_SHARE1/REG_B_SHARE1 "
+                        "carry fresh random share1; output shares are read "
+                        "separately and recombined only in the host after capture.")
     p.add_argument("--trigger-delay-cycles", type=int, default=0,
                    help="Delay the internal trigger this many target cycles after "
                         "the start write/input load. Used to align samples to "
@@ -753,6 +829,20 @@ def main():
     if not (0 <= args.trigger_delay_cycles <= 7):
         print("ERROR: --trigger-delay-cycles must be in [0, 7]", file=sys.stderr)
         return 2
+    if args.rtl_masked:
+        incompatible = []
+        if args.b_load_policy != "normal":
+            incompatible.append("--b-load-policy must be normal")
+        if args.b_preload_policy != "none":
+            incompatible.append("--b-preload-policy must be none")
+        if args.use_b_preload:
+            incompatible.append("--use-b-preload is not used")
+        if args.force_core_b_zero:
+            incompatible.append("--force-core-b-zero is not a masked run")
+        if incompatible:
+            print("ERROR: --rtl-masked uses dedicated additive share registers; "
+                  + ", ".join(incompatible), file=sys.stderr)
+            return 2
     if args.use_b_preload and args.b_preload_policy == "none":
         print("[inputs] WARNING: --use-b-preload is set but --b-preload-policy=none; "
               "b_preload will be 0 for every trace.")
@@ -830,6 +920,10 @@ def main():
             traces, b_arr, groups, out1_arr, out2_arr, k_arr,
             b_first_arr, b_effective_arr, b_preload_arr, b_core_start_arr,
             b_mask_share0_arr, b_mask_share1_arr,
+            a_rtl_share0_arr, a_rtl_share1_arr,
+            b_rtl_share0_arr, b_rtl_share1_arr,
+            out1_share0_arr, out1_share1_arr,
+            out2_share0_arr, out2_share1_arr,
         ) = capture_loop(
             scope, target,
             n_traces=args.num_traces, samples=capture_samples,
@@ -843,6 +937,7 @@ def main():
             b_preload_policy=args.b_preload_policy,
             use_b_preload=args.use_b_preload,
             force_core_b_zero=args.force_core_b_zero,
+            rtl_masked=args.rtl_masked,
             trigger_delay_cycles=args.trigger_delay_cycles,
             pre_arm_delay_ms=args.pre_arm_delay_ms,
         )
@@ -856,6 +951,25 @@ def main():
         except Exception:
             pass
 
+    if args.rtl_masked:
+        a_share_ok = np.all(
+            ((a_rtl_share0_arr.astype(np.int64) + a_rtl_share1_arr.astype(np.int64)) % q)
+            == int(a_mod)
+        )
+        b_share_ok = np.all(
+            ((b_rtl_share0_arr.astype(np.int64) + b_rtl_share1_arr.astype(np.int64)) % q)
+            == b_arr.astype(np.int64)
+        )
+        out_share_ok = np.all(
+            ((out1_share0_arr.astype(np.int64) + out1_share1_arr.astype(np.int64)) % q)
+            == out1_arr.astype(np.int64)
+        ) and np.all(
+            ((out2_share0_arr.astype(np.int64) + out2_share1_arr.astype(np.int64)) % q)
+            == out2_arr.astype(np.int64)
+        )
+        print(f"[mask] share sanity: a={a_share_ok}, b={b_share_ok}, "
+              f"out_recombine={out_share_ok}")
+
     np.save(out_dir / "traces.npy", traces)
     np.savez(
         out_dir / "inputs.npz",
@@ -868,10 +982,18 @@ def main():
         b_core_start=b_core_start_arr,
         b_mask_share0=b_mask_share0_arr,
         b_mask_share1=b_mask_share1_arr,
+        a_rtl_share0=a_rtl_share0_arr,
+        a_rtl_share1=a_rtl_share1_arr,
+        b_rtl_share0=b_rtl_share0_arr,
+        b_rtl_share1=b_rtl_share1_arr,
         k=k_arr,
         mode=np.full(args.num_traces, args.mode, dtype=np.uint8),
         mode2=np.full(args.num_traces, args.mode2, dtype=np.uint8),
         group=groups,
+        out1_share0=out1_share0_arr,
+        out1_share1=out1_share1_arr,
+        out2_share0=out2_share0_arr,
+        out2_share1=out2_share1_arr,
         out1=out1_arr,
         out2=out2_arr,
     )
@@ -909,6 +1031,7 @@ def main():
             "b_preload_policy":    args.b_preload_policy,
             "use_b_preload":       bool(args.use_b_preload),
             "force_core_b_zero":   bool(args.force_core_b_zero),
+            "rtl_masked":          bool(args.rtl_masked),
             "trigger_delay_cycles": int(args.trigger_delay_cycles),
             "pre_arm_delay_ms":    float(args.pre_arm_delay_ms),
             "b_field_note":        "inputs['b'] is the logical TVLA grouping value; "
@@ -917,7 +1040,11 @@ def main():
                                    "inputs['b_core_start'] is the value selected "
                                    "for b_core by the wrapper; "
                                    "for masked-share policies, "
-                                   "b = b_mask_share0 + b_mask_share1 mod q.",
+                                   "b = b_mask_share0 + b_mask_share1 mod q; "
+                                   "for --rtl-masked, REG_A/REG_B are RTL "
+                                   "share0, REG_A_SHARE1/REG_B_SHARE1 are "
+                                   "fresh random share1, and output shares are "
+                                   "recombined only in this host script.",
         },
         "seed":         args.seed,
         "bitfile":      str(bitpath),

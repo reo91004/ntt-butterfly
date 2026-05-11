@@ -7,7 +7,8 @@ ChipWhisperer-based capture/analysis pipeline for **side-channel leakage assessm
 
 > **이 프로젝트를 처음 보시는 분**: [docs/leakage_explained.md](docs/leakage_explained.md)
 > 가 친절한 입문서입니다. 부채널 공격, NTT butterfly, FPGA 파이프라인, 누설점 식별까지
-> 그림과 비유로 설명합니다. 이후 [docs/experiments/](docs/experiments/) 의 각 실험 문서로.
+> 한 파일로 통합해 설명합니다. [docs/experiments/README.md](docs/experiments/README.md)는
+> 남겨둔 대표 산출물과 TVLA plot 링크만 모은 인덱스입니다.
 
 The design is built for the [ChipWhisperer CW305](https://rtfm.newae.com/Targets/CW305%20Artix%20FPGA/)
 target board. The wrapper exposes a USB register interface for the host and routes a
@@ -43,11 +44,11 @@ inverse, Dilithium forward, Dilithium inverse — selected by `mode`/`mode2`.
 
 ### 1.2 Side-channel platform
 
-The wrapper drives `tio_trigger = busy_reg`. So during each capture:
-- start register write → `busy_reg` rises on the same FPGA cycle
+The wrapper drives `tio_trigger = trigger_reg`. So during each capture:
+- start register write → `busy_reg` rises and `trigger_reg` rises after the configured delay
 - `tio_trigger` rises → CW scope (already armed) begins ADC capture
 - the 7-cycle core result becomes valid near the start of the trace
-- `CAPTURE_DELAY=72` keeps `busy_reg`/trigger high for a post-result window, then
+- `CAPTURE_DELAY=72` keeps the trigger high for a post-result window, then
   latches readback outputs, raises `done_reg`, and drops the trigger
 - host reads outputs, clears `done`, moves on
 
@@ -105,7 +106,7 @@ butterfly/
 ├── README.md                                 — this file
 ├── .gitignore                                — keeps Vivado build artifacts out of git
 │
-├── rtl/                                      — canonical Verilog sources (human-edited)
+├── rtl/                                      — human-readable Verilog mirror (kept in sync)
 │   ├── cw305_unified_butterfly2_top_v4_directwrite.v   # CW305 USB-register wrapper
 │   ├── cw305_usb_reg_fe.v                              # NewAE official USB register frontend
 │   ├── unified_butterfly2_top.v                        # mux + ROM + core wiring
@@ -130,7 +131,7 @@ butterfly/
 │   ├── capture_traces.py                              # bulk trace capture (Husky/Lite branched)
 │   ├── tvla.py                                        # Welch t-test + plot
 │   ├── diag_trigger.py                                # diagnostic for trigger problems
-│   └── results/                                       # per-experiment subdirs (gitignored)
+│   └── results/                                       # raw captures ignored; representative plots tracked
 │       └── <YYYYMMDD_HHMMSS_label>/
 │           ├── traces.npy
 │           ├── inputs.npz
@@ -147,7 +148,7 @@ butterfly/
 └── unified_butterfly2/                                — Vivado workspace (gitignored except .xpr/.srcs)
     ├── unified_butterfly2.xpr                         # project file
     ├── unified_butterfly2.srcs/                       # Vivado's internal copies of sources
-    │                                                    (the canonical copies live in rtl/, etc.)
+    │                                                    (Vivado compiles these workspace copies)
     ├── unified_butterfly2.cache/      ← gitignored
     ├── unified_butterfly2.runs/       ← gitignored (impl_1 holds the .bit)
     ├── unified_butterfly2.gen/        ← gitignored
@@ -159,9 +160,9 @@ butterfly/
 ### 4.1 Why are sources duplicated in `rtl/` and `unified_butterfly2.srcs/sources_1/new/`?
 
 Because Vivado imports source files into the project workspace at project-creation time.
-The canonical copy is `rtl/`; the workspace copy is what Vivado actually compiles. They
-must be kept in sync — when you edit RTL, edit BOTH (or open Vivado, which can be
-configured to refresh from `rtl/`).
+The workspace copy under `unified_butterfly2/.../sources_1/new/` is what Vivado actually
+compiles. The `rtl/` folder is the human-readable mirror used for review and external
+navigation. Keep both copies in sync when editing RTL.
 
 ---
 
@@ -173,9 +174,9 @@ configured to refresh from `rtl/`).
 |---|---|---|
 | `Modular_Reduction32.v` | `Modular_Reduction32` | 4-stage pipelined Montgomery reduction (R = 2^32). QPRIME constants chosen automatically per `q`. |
 | `unified_bufferfly2.v` | `unified_butterfly2_core` | 7-stage pipelined CT/GS butterfly. Pre-mul mux → 32×32 multiplier → Montgomery → final add/sub. Latency 7 cycles, throughput 1/cycle. |
-| `unified_butterfly2_top.v` | `unified_butterfly2_top` | Wraps the core with the ROM (`blk_mem_gen_0`), selects the correct ζ zone via `mode`/`mode2`. |
+| `unified_butterfly2_top.v` | `unified_butterfly2_top`, `masked_unified_butterfly2_top` | Wraps the core with the ROM (`blk_mem_gen_0`), selects the correct ζ zone via `mode`/`mode2`; masked top runs two additive shares without recombining inside RTL. |
 | `cw305_usb_reg_fe.v` | `cw305_usb_reg_fe` | NewAE official module that decodes the SAM3U USB-FIFO parallel interface into register-style read/write signals. |
-| `cw305_unified_butterfly2_top_v4_directwrite.v` | `cw305_unified_butterfly2_top_v4` | Top module. Defines a register map (a, b, k, ctrl, status, out1, out2, debug counters), latches inputs, drives the butterfly, and asserts `tio_trigger = busy_reg` for the SCA scope. |
+| `cw305_unified_butterfly2_top_v4_directwrite.v` | `cw305_unified_butterfly2_top_v4` | Top module. Defines the register map, latches unmasked or masked share inputs, drives the butterfly, keeps output shares separate in masked mode, and asserts `tio_trigger` for the SCA scope. |
 | `mux2_1.v`, `demux1_2.v` | small combinational helpers, kept for Vivado project history; unused after the pipelined core was inlined. |
 
 ### 5.2 Constraints + sim
@@ -246,10 +247,10 @@ a separate USB trigger pin, with USB-transaction latency (~125 µs on Husky) bet
 trigger and the actual butterfly start. Trace alignment would suffer.
 
 Changed both copies of the wrapper so the default build drives
-`tio_trigger = busy_reg` via `pUSE_INTERNAL_TRIGGER=1`. Now `tio_trigger` rises and
-falls precisely with the FPGA's busy state, giving sub-cycle alignment. Set
-`pUSE_INTERNAL_TRIGGER=0` only for legacy host-toggle tests. The bitstream must be
-re-synthesized after this change.
+`tio_trigger = trigger_reg` via `pUSE_INTERNAL_TRIGGER=1`. Now `tio_trigger` rises
+from a hardware start-aligned register, with an optional target-cycle delay from
+`CTRL[7:5]`. Set `pUSE_INTERNAL_TRIGGER=0` only for legacy host-toggle tests.
+The bitstream must be re-synthesized after this change.
 
 ### 6.4 Host pipeline added
 
@@ -319,7 +320,7 @@ python3 host/capture_traces.py \
 
 Defaults:
 - scope auto-detect (Husky-Plus, Husky, Lite, Pro)
-- `--trigger-mode internal` (assumes the new wrapper with `tio_trigger = busy_reg`)
+- `--trigger-mode internal` (assumes the new wrapper with `tio_trigger = trigger_reg`)
 - `--target-freq 96e6`, `--adc-mul 0` (auto: Husky/Husky-Plus x2, CW-Lite/Pro x1)
 - a-input 0xCAFEBABE is reduced mod q before FPGA write, b-fixed 0x12345678 is reduced mod q, seed 0xC0FFEE for reproducibility
 - output → `host/results/<timestamp>_kyber_ct_b_first/`
@@ -407,9 +408,9 @@ separate workstation where no scope needs to be reserved.
    time out with "no trigger seen". Either re-synthesize, or use `--trigger-mode host-toggle`
    with a much wider `--samples` window.
 
-4. **Two source-of-truth copies of the RTL.** Edits made in `rtl/` are not auto-mirrored
-   into `unified_butterfly2/.srcs/sources_1/new/`. Edit both, or open Vivado and let it
-   refresh.
+4. **Two synchronized RTL copies.** Vivado compiles
+   `unified_butterfly2/.srcs/sources_1/new/`; `rtl/` is the review-friendly mirror.
+   Edit both copies together before rebuilding.
 
 5. **The `unified_butterfly2/` workspace contains macOS `.DS_Store` files** because the
    project came from a Mac. They're harmless and gitignored.

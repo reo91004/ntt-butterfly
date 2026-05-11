@@ -8,7 +8,7 @@
  * not toggling while reads were OK.
  *
  * Python / ChipWhisperer register map:
- *   0x00 : A[31:0]     write/read 4 bytes, little-endian
+ *   0x00 : A[31:0]     legacy alias; host tools use 0x0D on CW305
  *   0x01 : B[31:0]     write/read 4 bytes, little-endian
  *   0x02 : K[9:0]      write/read 2 bytes, little-endian
  *   0x03 : CTRL        write/read 1 byte:
@@ -23,6 +23,12 @@
  *   0x05 : OUT1[31:0]  read 4 bytes, little-endian
  *   0x06 : OUT2[31:0]  read 4 bytes, little-endian
  *   0x07 : B_PRELOAD[31:0] readback, little-endian
+ *   0x08 : A_SHARE1[31:0] write/read, masked mode
+ *   0x09 : B_SHARE1[31:0] write/read, masked mode
+ *   0x0A : OUT1_SHARE1[31:0] read 4 bytes, masked mode
+ *   0x0B : OUT2_SHARE1[31:0] read 4 bytes, masked mode
+ *   0x0C : MASK_CTRL write/read 1 byte, bit0=mask_enable
+ *   0x0D : A[31:0]     write/read 4 bytes, little-endian
  *   0x70 : debug direct_write_count
  *   0x71 : debug last_write_addr
  *   0x72 : debug last_write_bytecnt
@@ -113,22 +119,29 @@ module cw305_unified_butterfly2_top_v4 #(
     wire [pBYTECNT_SIZE-1:0]             direct_wr_byte = usb_addr[pBYTECNT_SIZE-1:0];
     wire [7:0]                           direct_wr_data = usb_din;
 
-    reg [31:0] a_shadow     = 32'd0;
-    reg [31:0] b_shadow     = 32'd0;
-    reg [31:0] b_preload    = 32'd0;
+    reg [31:0] a_shadow        = 32'd0;
+    reg [31:0] b_shadow        = 32'd0;
+    reg [31:0] b_preload       = 32'd0;
+    reg [31:0] a_share1_shadow = 32'd0;
+    reg [31:0] b_share1_shadow = 32'd0;
     reg [9:0]  k_shadow     = 10'd0;
     reg        mode_shadow  = 1'b1;
     reg        mode2_shadow = 1'b0;
     reg [2:0]  trigger_delay_shadow = 3'd0;
 
-    reg [31:0] a_core       = 32'd0;
-    reg [31:0] b_core       = 32'd0;
+    reg [31:0] a_core        = 32'd0;
+    reg [31:0] b_core        = 32'd0;
+    reg [31:0] a_share1_core = 32'd0;
+    reg [31:0] b_share1_core = 32'd0;
     reg [9:0]  k_core       = 10'd0;
     reg        mode_core    = 1'b1;
     reg        mode2_core   = 1'b0;
+    reg        mask_enable_core = 1'b0;
 
     reg [31:0] out1_reg     = 32'd0;
     reg [31:0] out2_reg     = 32'd0;
+    reg [31:0] out1_share1_reg = 32'd0;
+    reg [31:0] out2_share1_reg = 32'd0;
     reg        busy_reg     = 1'b0;
     reg        done_reg     = 1'b0;
     reg [7:0]  wait_count   = 8'd0;
@@ -154,22 +167,37 @@ module cw305_unified_butterfly2_top_v4 #(
 
     wire [31:0] out1_wire;
     wire [31:0] out2_wire;
+    wire [31:0] out1_share1_wire;
+    wire [31:0] out2_share1_wire;
     reg         use_b_preload_on_start = 1'b0;
     reg         force_core_b_zero      = 1'b0;
     reg         route_b_write_to_preload = 1'b0;
-    wire [31:0] b_start_value =
+    reg         mask_enable_shadow = 1'b0;
+    wire [31:0] b_unmasked_start_value =
         force_core_b_zero ? 32'd0 :
         (use_b_preload_on_start ? b_preload : b_shadow);
 
-    unified_butterfly2_top U_butterfly (
-        .clk   (usb_clk_buf),
-        .a     (a_core),
-        .b     (b_core),
-        .mode  (mode_core),
-        .mode2 (mode2_core),
-        .k     (k_core),
-        .out1  (out1_wire),
-        .out2  (out2_wire)
+    wire [31:0] b_share0_start_value =
+        mask_enable_shadow ? (force_core_b_zero ? 32'd0 : b_shadow) :
+                             b_unmasked_start_value;
+    wire [31:0] b_share1_start_value =
+        (mask_enable_shadow && !force_core_b_zero) ? b_share1_shadow : 32'd0;
+    wire [31:0] a_share1_start_value =
+        mask_enable_shadow ? a_share1_shadow : 32'd0;
+
+    masked_unified_butterfly2_top U_butterfly (
+        .clk    (usb_clk_buf),
+        .a0     (a_core),
+        .a1     (a_share1_core),
+        .b0     (b_core),
+        .b1     (b_share1_core),
+        .mode   (mode_core),
+        .mode2  (mode2_core),
+        .k      (k_core),
+        .out1_0 (out1_wire),
+        .out1_1 (out1_share1_wire),
+        .out2_0 (out2_wire),
+        .out2_1 (out2_share1_wire)
     );
 
     always @(posedge usb_clk_buf) begin
@@ -189,11 +217,13 @@ module cw305_unified_butterfly2_top_v4 #(
                 end
             end
             if (wait_count == CAPTURE_DELAY) begin
-                out1_reg   <= out1_wire;
-                out2_reg   <= out2_wire;
-                busy_reg   <= 1'b0;
-                done_reg   <= 1'b1;
-                wait_count <= 8'd0;
+                out1_reg        <= out1_wire;
+                out2_reg        <= out2_wire;
+                out1_share1_reg <= out1_share1_wire;
+                out2_share1_reg <= out2_share1_wire;
+                busy_reg        <= 1'b0;
+                done_reg        <= 1'b1;
+                wait_count      <= 8'd0;
                 trigger_delay_count <= 8'd0;
                 trigger_reg <= 1'b0;
             end
@@ -206,7 +236,7 @@ module cw305_unified_butterfly2_top_v4 #(
             last_write_data    <= direct_wr_data;
 
             case (direct_wr_addr[7:0])
-                8'h00: begin
+                8'h00, 8'h0D: begin
                     case (direct_wr_byte[1:0])
                         2'd0: a_shadow[7:0]   <= direct_wr_data;
                         2'd1: a_shadow[15:8]  <= direct_wr_data;
@@ -251,6 +281,24 @@ module cw305_unified_butterfly2_top_v4 #(
                     endcase
                 end
 
+                8'h08: begin
+                    case (direct_wr_byte[1:0])
+                        2'd0: a_share1_shadow[7:0]   <= direct_wr_data;
+                        2'd1: a_share1_shadow[15:8]  <= direct_wr_data;
+                        2'd2: a_share1_shadow[23:16] <= direct_wr_data;
+                        2'd3: a_share1_shadow[31:24] <= direct_wr_data;
+                    endcase
+                end
+
+                8'h09: begin
+                    case (direct_wr_byte[1:0])
+                        2'd0: b_share1_shadow[7:0]   <= direct_wr_data;
+                        2'd1: b_share1_shadow[15:8]  <= direct_wr_data;
+                        2'd2: b_share1_shadow[23:16] <= direct_wr_data;
+                        2'd3: b_share1_shadow[31:24] <= direct_wr_data;
+                    endcase
+                end
+
                 8'h03: begin
                     if (direct_wr_byte == 7'd0) begin
                         mode_shadow              <= direct_wr_data[0];
@@ -267,18 +315,26 @@ module cw305_unified_butterfly2_top_v4 #(
                         if (direct_wr_data[1])
                             done_reg <= 1'b0;
                         if (direct_wr_data[0] && !busy_reg) begin
-                            a_core     <= a_shadow;
-                            b_core     <= b_start_value;
-                            k_core     <= k_shadow;
-                            mode_core  <= mode_shadow;
-                            mode2_core <= mode2_shadow;
-                            busy_reg   <= 1'b1;
-                            done_reg   <= 1'b0;
-                            wait_count <= 8'd0;
+                            a_core           <= a_shadow;
+                            b_core           <= b_share0_start_value;
+                            a_share1_core    <= a_share1_start_value;
+                            b_share1_core    <= b_share1_start_value;
+                            k_core           <= k_shadow;
+                            mode_core        <= mode_shadow;
+                            mode2_core       <= mode2_shadow;
+                            mask_enable_core <= mask_enable_shadow;
+                            busy_reg         <= 1'b1;
+                            done_reg         <= 1'b0;
+                            wait_count       <= 8'd0;
                             trigger_delay_count <= trigger_delay_shadow;
                             trigger_reg <= (trigger_delay_shadow == 8'd0);
                         end
                     end
+                end
+
+                8'h0C: begin
+                    if (direct_wr_byte == 7'd0)
+                        mask_enable_shadow <= direct_wr_data[0];
                 end
 
             endcase
@@ -286,7 +342,8 @@ module cw305_unified_butterfly2_top_v4 #(
     end
 
     assign read_data =
-        (reg_address[7:0] == 8'h00) ? ((reg_bytecnt[1:0] == 2'd0) ? a_shadow[7:0]   :
+        ((reg_address[7:0] == 8'h00) || (reg_address[7:0] == 8'h0D)) ?
+                                      ((reg_bytecnt[1:0] == 2'd0) ? a_shadow[7:0]   :
                                        (reg_bytecnt[1:0] == 2'd1) ? a_shadow[15:8]  :
                                        (reg_bytecnt[1:0] == 2'd2) ? a_shadow[23:16] :
                                                                     a_shadow[31:24]) :
@@ -314,6 +371,23 @@ module cw305_unified_butterfly2_top_v4 #(
                                        (reg_bytecnt[1:0] == 2'd1) ? b_preload[15:8]  :
                                        (reg_bytecnt[1:0] == 2'd2) ? b_preload[23:16] :
                                                                     b_preload[31:24]) :
+        (reg_address[7:0] == 8'h08) ? ((reg_bytecnt[1:0] == 2'd0) ? a_share1_shadow[7:0]   :
+                                       (reg_bytecnt[1:0] == 2'd1) ? a_share1_shadow[15:8]  :
+                                       (reg_bytecnt[1:0] == 2'd2) ? a_share1_shadow[23:16] :
+                                                                    a_share1_shadow[31:24]) :
+        (reg_address[7:0] == 8'h09) ? ((reg_bytecnt[1:0] == 2'd0) ? b_share1_shadow[7:0]   :
+                                       (reg_bytecnt[1:0] == 2'd1) ? b_share1_shadow[15:8]  :
+                                       (reg_bytecnt[1:0] == 2'd2) ? b_share1_shadow[23:16] :
+                                                                    b_share1_shadow[31:24]) :
+        (reg_address[7:0] == 8'h0A) ? ((reg_bytecnt[1:0] == 2'd0) ? out1_share1_reg[7:0]   :
+                                       (reg_bytecnt[1:0] == 2'd1) ? out1_share1_reg[15:8]  :
+                                       (reg_bytecnt[1:0] == 2'd2) ? out1_share1_reg[23:16] :
+                                                                    out1_share1_reg[31:24]) :
+        (reg_address[7:0] == 8'h0B) ? ((reg_bytecnt[1:0] == 2'd0) ? out2_share1_reg[7:0]   :
+                                       (reg_bytecnt[1:0] == 2'd1) ? out2_share1_reg[15:8]  :
+                                       (reg_bytecnt[1:0] == 2'd2) ? out2_share1_reg[23:16] :
+                                                                    out2_share1_reg[31:24]) :
+        (reg_address[7:0] == 8'h0C) ? {6'b0, mask_enable_core, mask_enable_shadow} :
         (reg_address[7:0] == 8'h70) ? direct_write_count :
         (reg_address[7:0] == 8'h71) ? last_write_addr :
         (reg_address[7:0] == 8'h72) ? {1'b0, last_write_byte} :

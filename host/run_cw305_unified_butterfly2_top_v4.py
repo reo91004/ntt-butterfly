@@ -3,13 +3,14 @@
 CW305 unified_butterfly2 test script for v4 direct-write wrapper.
 
 Register map:
-  0x00 : A[31:0]     4 bytes little-endian
+  0x00 : A[31:0]     legacy alias
   0x01 : B[31:0]     4 bytes little-endian
   0x02 : K[9:0]      2 bytes little-endian
   0x03 : CTRL        1 byte, bit0=mode, bit1=mode2
   0x04 : CMD/STATUS  write bit0=start, bit1=clear_done; read bit0=done, bit1=busy
   0x05 : OUT1[31:0]  4 bytes little-endian
   0x06 : OUT2[31:0]  4 bytes little-endian
+  0x0D : A[31:0]     4 bytes little-endian (host-safe alias)
   0x70..0x73 : write debug
   0x7E : ID = 0xC4
 """
@@ -21,7 +22,7 @@ from pathlib import Path
 
 import chipwhisperer as cw
 
-REG_A = 0x00
+REG_A = 0x0D
 REG_B = 0x01
 REG_K = 0x02
 REG_CTRL = 0x03
@@ -88,7 +89,7 @@ def connect(bitfile, no_program):
     if not bitpath.exists():
         raise FileNotFoundError(f"bitfile not found: {bitpath}")
     print("[1] CW305 connecting/programming...")
-    target = cw.target(None, cw.targets.CW305, bsfile=str(bitpath))
+    target = cw.target(None, cw.targets.CW305, bsfile=str(bitpath), force=True)
     print(f"[2] FPGA programmed: {bitpath}")
     return target
 

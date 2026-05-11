@@ -7,7 +7,7 @@ from pathlib import Path
 EXCLUDE_SCOPE_SERIAL = "50203220594a48303330373133323037"
 
 # CW305 register map (matches rtl/cw305_unified_butterfly2_top_v4_directwrite.v).
-REG_A           = 0x00
+REG_A_LEGACY    = 0x00
 REG_B           = 0x01
 REG_K           = 0x02
 REG_CTRL        = 0x03
@@ -15,6 +15,12 @@ REG_STATUS      = 0x04
 REG_OUT1        = 0x05
 REG_OUT2        = 0x06
 REG_B_PRELOAD   = 0x07  # readback only; writes are routed through REG_B by REG_CTRL bit4
+REG_A_SHARE1    = 0x08
+REG_B_SHARE1    = 0x09
+REG_OUT1_SHARE1 = 0x0A
+REG_OUT2_SHARE1 = 0x0B
+REG_MASK_CTRL   = 0x0C
+REG_A           = 0x0D  # 0x00 is unreliable with CW305 fpga_write(); use alias.
 REG_WRCOUNT     = 0x70
 REG_LAST_ADDR   = 0x71
 REG_LAST_BYTE   = 0x72
