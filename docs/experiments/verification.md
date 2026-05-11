@@ -83,8 +83,11 @@ canonical CPA rerun:
 | Exp C | 정합. Dilithium은 Kyber보다 더 넓게 누설 |
 | Exp D | 초기 결론 수정. random-only 분석에서 일부 bit만 임계 통과 |
 | Exp E | 초기 exploitability 결론 수정. canonical naive CPA는 실패 |
+| Exp F | localization 결론 수정. 현재 dominant peak는 core/S7가 아니라 `REG_B` write/input path |
 
 **전반적 결론**: unified butterfly2는 canonical 입력 조건에서도 강한 입력 의존 전력 누설을
-보이며 TVLA 기준으로 fail입니다. 다만 단순 HW 모델과 naive CPA 공격 가능성은 초기 문서보다
-약하게 평가해야 하며, 공격 효율을 주장하려면 profiling/template 또는 다중 중간값 기반
-재실험이 필요합니다.
+보이며 TVLA 기준으로 fail입니다. 다만 그 강한 peak를 곧바로 multiplier/MR/S7 누설로
+localize하면 안 됩니다. Exp F에서 core/S7를 끊어도 peak가 유지되고, arm 직전 fixed B
+scrub을 넣으면 peak가 사라졌으므로, 현재 capture protocol의 dominant peak는 `REG_B`
+write/input path가 지배합니다. core-only 누설과 공격 효율을 주장하려면 preload/scrub
+wrapper, profiling/template, 다중 중간값 기반 재실험이 필요합니다.

@@ -22,7 +22,7 @@ Verilog / Vivado / FPGA 부채널 분석을 처음 들어보는 독자를 가정
 5. [호스트 코드 — 무엇이 무엇을 하는가](#5-호스트-코드--무엇이-무엇을-하는가)
 6. [한 trace를 캡처할 때 일어나는 일](#6-한-trace를-캡처할-때-일어나는-일)
 7. [누설점 — 어느 register, 어느 sample](#7-누설점--어느-register-어느-sample)
-8. [실험 5개의 논리 흐름](#8-실험-5개의-논리-흐름)
+8. [실험 6개의 논리 흐름](#8-실험-6개의-논리-흐름)
 9. [결과가 정합한 이유](#9-결과가-정합한-이유)
 10. [정직한 후퇴 — 무엇을 회수했고 왜](#10-정직한-후퇴--무엇을-회수했고-왜)
 11. [자주 놓치는 점들](#11-자주-놓치는-점들)
@@ -53,6 +53,10 @@ Verilog / Vivado / FPGA 부채널 분석을 처음 들어보는 독자를 가정
   - **누설은 확실히 있다**. canonical 입력 (`a, b < q`) 조건에서도 TVLA
     peak |t| 가 88-98로, NIST PQC 평가 표준 임계값 4.5를 압도. butterfly
     파이프라인의 첫 몇 cycle 안에서 즉시 검출.
+  - **다만 현재 dominant peak의 위치 해석은 수정됨**. A-E만 보면 peak가
+    S7/post-result window와 겹쳐 core output 누설처럼 보이지만, Exp F의 isolation
+    실험에서 core/S7를 끊어도 peak가 남고 arm 직전 fixed B scrub 시 peak가 사라졌다.
+    지금 capture protocol의 강한 peak는 `REG_B` write/input path 상태가 지배한다.
   - **CT/GS 모두 같은 위치에서 누설**. mode mux가 별도의 신규 cluster를 만들지는
     않음. 다만 단일 알고리즘 분리 구현과 직접 비교한 baseline은 아직 없음.
   - **Dilithium 이 더 강하게 누설**. operand bit 폭이 12-bit 에서 23-bit 로
@@ -63,9 +67,9 @@ Verilog / Vivado / FPGA 부채널 분석을 처음 들어보는 독자를 가정
 
 ### 이 문서를 읽고 나면 알 수 있는 것
 
-- 회로의 어느 register, 어느 cycle, 어느 sample 위치가 누설하는지.
+- 회로/입력 경로의 어느 cycle, 어느 sample 위치가 누설 후보인지.
 - 그게 왜 그 위치인지 (RTL 라인 단위).
-- 5개 실험 (A~E) 이 각각 어떤 질문을 답하는지, 결과가 어떻게 서로를 보강하는지.
+- 6개 실험 (A~F) 이 각각 어떤 질문을 답하는지, 결과가 어떻게 서로를 보강하는지.
 - "TVLA fail" 과 "공격 성공" 이 다른 이야기인 이유.
 
 ---
@@ -409,12 +413,34 @@ trigger ↑ at sample 0 (= busy_reg 상승 cycle).
 | C20+ | 39~54 | 새 산술 stage는 없음; 안정화된 core output의 routing/fanout 영향 후보 | core output fanout |
 | C74 근처 | ~146 | wait_count == CAPTURE_DELAY, readback latch, busy_reg=0, done_reg=1, trigger 하강 | out1_reg, out2_reg, busy_reg, done_reg |
 
-★ **mul_s2 (cycle 4)** 와 **out1/out2 (cycle 9)** 가 비밀에 가장 강하게 의존
-하는 두 register.
+주의: 이 표는 sample이 어떤 core cycle과 겹치는지 보여준다. Exp F 이후에는
+sample 위치만으로 누설원을 확정하지 않는다. 현재 capture loop에서는 `REG_B` write
+직후 scope를 arm하므로, 마지막 B write/input path 상태가 core cycle window에 겹쳐
+보일 수 있다.
 
 ---
 
 ## 7. 누설점 — 어느 register, 어느 sample
+
+### 최신 결론: 현재 dominant peak는 `REG_B` write/input path
+
+2026-05-11에 수행한 [Exp F](experiments/exp_F_input_write_isolation.md)가 이 장의
+초기 해석을 갱신한다. A-E의 TVLA fail 자체는 유효하지만, sample 위치만 보고
+S7/final output register를 주 누설점으로 단정하면 안 된다.
+
+| 실험 | 분리한 것 | peak |
+|---|---|---:|
+| baseline | 원래 capture loop | `|t|=33.65 @ s20` |
+| S7 correction 제거 | final 조건문 제거 | `|t|=34.88 @ s21` |
+| dummy output | `out1/out2`를 secret-independent로 교체 | `|t|=35.07 @ s21` |
+| core `.b=0`, `b_core=0` | multiplier/MR/S7에서 secret 제거 | `|t|=33.77 @ s20` |
+| 실제 FPGA B write constant | group label은 유지, `REG_B` write 값만 fixed | `|t|=3.27`, no leakage |
+| random B 후 fixed B scrub | random write 뒤 arm 직전 fixed로 덮어쓰기 | `|t|=2.63`, no leakage |
+
+따라서 현재 capture protocol에서 보이는 강한 sample 20대 peak는 arithmetic core의
+final result보다 **마지막 `REG_B` write/input path 상태**가 지배한다. 진짜 core-only
+누설을 보려면 secret을 별도 preload한 뒤, scope arm 직전 외부 `REG_B`/USB write path를
+fixed 또는 dummy 값으로 scrub하고 start만 걸어야 한다.
 
 A2 캡처 (Kyber CT, k=16, N=20000) 의 TVLA 결과:
 
@@ -428,13 +454,16 @@ sample 51:  |t| = 62.64
 임계 통과 sample: 65 / 800
 ```
 
-두 cluster 가 서로 다른 물리적 출처를 가짐.
+두 cluster 는 A-E에서 반복 관측됐다. 다만 Exp F 이후에는 아래 설명을 "초기 위치 기반
+가설"로 읽어야 하며, core 누설로 확정하지 않는다.
 
 ### Cluster 1 — sample 16~30 (양수 t)
 
-cycle C9~C15 영역. S7 register (out1, out2) 가 갱신된 직후 + 결과가 후속
-register 들로 흘러가는 안정화 구간. 여러 register 가 동시에 b 의존 값을 들고
-있어 합산 누설이 가장 큼.
+cycle C9~C15 영역과 시간상 겹친다. 초기 해석은 S7 register (out1, out2) 갱신 직후
++ 결과가 후속 register 들로 흘러가는 안정화 구간이라고 봤다. 하지만 Exp F에서
+core/S7를 secret-independent하게 만들어도 같은 peak가 유지됐고, arm 직전 fixed B scrub
+으로 사라졌다. 따라서 현재 capture protocol에서는 `REG_B` write/input path 상태가 만든
+신호로 보는 것이 더 정합하다.
 
 양수 t 의 의미: "고정 b group 의 평균 전력 > 랜덤 b group 의 평균". 고정 b 값
 (0x12345678 % 3329 = 791) 이 만드는 mul_s2 = 791 · ζ 의 HW 가 랜덤 b 평균
@@ -442,11 +471,11 @@ register 들로 흘러가는 안정화 구간. 여러 register 가 동시에 b �
 
 ### Cluster 2 — sample 39~54 (음수 t)
 
-cycle C20~C27. butterfly 본 연산은 끝났지만 wrapper 의 read_data combinational
-mux ([wrapper:226-253](../rtl/cw305_unified_butterfly2_top_v4_directwrite.v))
-가 매 cycle 다른 register 출력을 선택하면서 toggle. mux 입력 일부 (0x05/0x06)
-는 b 의존, 나머지는 b 무관. 고정 b 그룹은 안정 패턴 → 평균 전력 LOW. 랜덤 b
-그룹은 매번 다른 패턴 → 평균 전력 HIGH. 그래서 t 가 음수.
+cycle C20~C27. butterfly 본 연산은 끝났지만 post-trigger window 안에 남는 두 번째
+cluster다. 예전에는 readback mux나 core output fanout 후보로 설명했지만, Exp F 이후에는
+이 역시 `REG_B` write/input path의 잔여 상태 또는 그 상태가 wrapper/USB frontend에
+남긴 영향까지 열어두고 해석한다. 별도 preload/scrub wrapper 없이는 core fanout이라고
+확정할 수 없다.
 
 ### 비트별 누설 (Exp D)
 
@@ -467,17 +496,18 @@ bit 12~31: skip (Kyber q < 2^12, 사용 안 함)
 
 ---
 
-## 8. 실험 5개의 논리 흐름
+## 8. 실험 6개의 논리 흐름
 
-`docs/experiments/` 의 A~E 가 다섯 개 질문에 차례로 답한다.
+`docs/experiments/` 의 A~F 가 여섯 개 질문에 차례로 답한다.
 
 | 실험 | 답하려는 질문 | 결과 |
 |---|---|---|
 | **A** | 누설이 진짜 있나? 어디에 위치? | Kyber CT 베이스라인. peak \|t\|=90.3 @ sample 21. cluster 1·2 위치 확인 |
-| **B** | mode (CT vs GS) 가 누설 패턴을 바꾸나? | 같은 b 시퀀스로 GS 캡처. peak·cluster 거의 동일 → mode mux 신규 누설 없음 |
+| **B** | mode (CT vs GS) 가 누설 패턴을 바꾸나? | 같은 b 시퀀스로 GS 캡처. peak·cluster 거의 동일. 단, mode mux 자체가 clean이라는 뜻은 아님 |
 | **C** | 알고리즘 (Kyber vs Dilithium) 차이는? | Dilithium 으로 같은 패턴 반복. peak |t| 더 크고 누설 sample 더 많음 (operand bit 폭 ↑) |
 | **D** | 어떤 bit 가 가장 강하게 누설? | bit-specific TVLA. 일부 bit 에 집중. 균등 HW 결론은 아니다 |
 | **E** | 누설로 secret 복구 가능한가? | naive HW CPA. canonical 조건에서 후보 공간 축소 실패 |
+| **F** | A-E의 peak가 정말 core/S7인가? | 아니다. core/S7를 끊어도 peak 유지, arm 직전 fixed B scrub 시 peak 소멸 → 현재 dominant peak는 `REG_B` write/input path |
 
 각 실험은 이전 실험의 데이터/결론을 *전제로* 다음 질문을 넘긴다.
 
@@ -487,6 +517,8 @@ bit 12~31: skip (Kyber q < 2^12, 사용 안 함)
 - A/B/C 데이터가 다 있기에 → D 는 비트 단위로 같은 데이터를 재해석.
 - TVLA 가 *검출* 에 성공했기에 → E 는 "그럼 *공격* 도 되나"라는 별개 질문으로
   넘어감.
+- A-E의 sample 위치 해석이 남아 있었기에 → F 는 "정말 core arithmetic이 원인인가"를
+  isolation bitstream으로 검증함.
 
 ### A/B 가 paired 인 이유
 
@@ -523,11 +555,16 @@ Welch's t > 4.5 임계는 평균 차이가 노이즈 표준오차의 4.5 배 이
 sample 에서 유지되어야 함. 우리는 |t| 가 90 까지 나옴 → 거의 이론적으로 불가능
 한 noise 변동. 진짜 신호.
 
-### 9.4 같은 sample 위치에서 누설 (5개 실험)
+### 9.4 같은 sample 위치에서 누설, 그리고 위치 해석의 한계
 
 A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
-= 21. 모두 sample 18~26 안. 같은 파이프라인 stage (C9 직후 post-result window) 가
-누설하는 거라 mode/algorithm 을 바꿔도 위치는 변하지 않음.
+= 21. 모두 sample 18~26 안. A-E만 보면 같은 파이프라인 stage (C9 직후
+post-result window)가 누설하는 것처럼 보인다.
+
+Exp F가 이 해석을 제한한다. core/S7를 secret-independent하게 만들어도 같은 위치의
+peak가 유지됐고, arm 직전 fixed B scrub으로 사라졌다. 따라서 sample 위치의 일관성은
+"같은 trigger/capture protocol에서 같은 시점에 입력 write-path 상태가 관측된다"는
+뜻일 수 있으며, core arithmetic localization의 충분조건이 아니다.
 
 ### 9.5 Bit 폭과 누설 강도의 비례
 
@@ -599,16 +636,15 @@ A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
 4. **paired 캡처의 가치**. seed 가 같으면 b 시퀀스가 같음 → A vs B 비교가
    같은 입력을 두 회로 모드로 통과시킨 결과. 통계 검정력이 다름.
 
-5. **`mul_s2` 가 정보론적 worst-case**. 64 bit 에 b·ζ 그대로 들어감. 그러나
-   TVLA peak 은 sample 6~7 (= cycle C4) 이 아니라 sample 18~24. 이유: 단일
-   register 갱신보다 *여러 register 의 누설이 누적되는 구간* 이 훨씬 큰
-   신호를 만들기 때문.
+5. **`mul_s2` 는 core-only 후보이지 현재 dominant peak의 확정 원인은 아님**.
+   64 bit 에 b·ζ 그대로 들어가므로 정보론적으로는 위험한 register다. 그러나
+   Exp F에서 core `.b`를 constant로 끊어도 강한 peak가 유지됐다. core-only 누설은
+   preload/scrub wrapper로 다시 분리해야 한다.
 
 6. **cluster 2 (sample 39~54) 는 새 butterfly stage 가 아니다**. 현재 wrapper는
    readback register (`out1_reg/out2_reg`) 를 CAPTURE_DELAY 시점에 latch하므로,
-   sample 39~54를 새 결과의 readback-mux fanout이라고 단정할 수 없다. 더 보수적으로는
-   S7 이후 안정화된 core output/routing/fanout 이 post-result window 안에서 만드는
-   두 번째 cluster 로 해석한다.
+   sample 39~54를 새 결과의 readback-mux fanout이라고 단정할 수 없다. Exp F 이후에는
+   `REG_B` write/input path의 잔여 상태나 USB frontend 영향까지 열어두고 해석한다.
 
 7. **mode mux 가 leak-clean 이라고 단정한 적 없음**. Exp B 는 "추가 cluster 가
    *관측되지 않음*" 을 보였을 뿐. 단일 알고리즘으로 분리 합성한 별도 bitstream
@@ -649,12 +685,15 @@ A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
 
 ## 12. 다음 단계
 
+- **Preload/scrub wrapper**: secret `b`를 내부 preload register에 먼저 넣고, scope arm
+  직전에는 외부 `REG_B`/USB write path를 fixed 또는 dummy 값으로 scrub한 뒤 start만
+  거는 구조. 이 실험이 먼저 있어야 core-only leakage를 분리할 수 있다.
 - **Separate-impl baseline**: Kyber 단독 / Dilithium 단독 bitstream 을 별도
   합성해서 같은 input/seed 로 캡처. unified vs separate 의 |t| 차이를 직접
   비교하면 "통합이 만든 신규 누설" 을 정량화 가능. (Vivado 합성 작업 필요)
-- **Boolean masking 적용 후 재측정**: secret 값을 random share `r` 로 분해해
-  multiplier 입력 두 register 에 분산 저장. 같은 측정 인프라로 |t| 가 얼마나
-  떨어지는지 비교.
+- **Boolean masking 적용 후 재측정**: preload/scrub wrapper에서 core-only TVLA가
+  재현될 때 적용. secret 값을 random share `r` 로 분해해 multiplier 입력 두 register 에
+  분산 저장하고 |t| 가 얼마나 떨어지는지 비교.
 - **Profiling/template attack**: training set 에서 leakage 모델을 추정한 뒤
   attack set 에 적용. naive HW CPA 가 실패한 canonical 조건에서도 더 정교한
   공격이 가능한지 확인.
@@ -669,13 +708,14 @@ A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
 
 | 누설 지점 | 파일 | 라인 | 설명 |
 |---|---|---|---|
-| 입력 latch | `cw305_unified_butterfly2_top_v4_directwrite.v` | 150~221 | a_core, b_core, k_core 등 |
+| **REG_B write/input path** | `cw305_unified_butterfly2_top_v4_directwrite.v` + CW305 USB frontend | 0x01 write path | **Exp F 기준 현재 dominant peak** |
+| 입력 latch | `cw305_unified_butterfly2_top_v4_directwrite.v` | 150~221 | a_core, b_core, k_core 등. Exp F에서는 이 latch만으로 설명되지 않음 |
 | ROM 조회 | `unified_butterfly2_top.v` | 36~41 | blk_mem_gen_0 instance |
 | S1 register | `unified_bufferfly2.v` | 39~50 | m1_s1, ref_zeta_s1 |
-| **S2 register (mul_s2)** | `unified_bufferfly2.v` | 53~62 | **64-bit 곱셈 결과 — 핵심 누설** |
+| S2 register (mul_s2) | `unified_bufferfly2.v` | 53~62 | core-only 실험에서 다시 검증해야 할 후보 |
 | Mont 4 stages | `Modular_Reduction32.v` | 25~74 | Montgomery 감산기 4단 |
-| **S7 register (out1, out2)** | `unified_bufferfly2.v` | 117~120 | **최종 결과 — 핵심 누설** |
-| post-result fanout | `cw305_unified_butterfly2_top_v4_directwrite.v` + routing | S7 이후 | cluster 2의 보수적 해석 |
+| S7 register (out1, out2) | `unified_bufferfly2.v` | 117~120 | core-only 실험에서 다시 검증해야 할 후보. 현재 dominant peak의 필요조건은 아님 |
+| post-result fanout | `cw305_unified_butterfly2_top_v4_directwrite.v` + routing | S7 이후 | Exp F 전의 후보. preload/scrub 없이 확정 불가 |
 
 ## 부록 B: 호스트 코드 의존성
 

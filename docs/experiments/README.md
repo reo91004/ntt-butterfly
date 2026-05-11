@@ -22,8 +22,9 @@
 | [C](exp_C_dilithium.md) | Dilithium CT/GS + control | yes | b varies | canonical rerun peak \|t\|=93.9-98.1, Kyber보다 더 넓은 누설 window |
 | [D](exp_D_bit_specific_tvla.md) | 비트별 TVLA | (A/B/C 데이터 재분석) | random-b only | fixed half 제거 후 Kyber 4-5 bits, Dilithium 3-11 bits만 임계 통과 — "전 bit 균등 HW" 결론 철회 |
 | [E](exp_E_cpa.md) | CPA — 공격 가능성 점검 | yes (vary k) | b fixed=1291 | canonical rerun에서 true rank 1550/1829 수준 — naive HW CPA exploitable 결론 미확인 |
+| [F](exp_F_input_write_isolation.md) | 입력 write path 분리 | temporary variants | b write varies | core/S7를 끊어도 peak 유지, arm 직전 fixed B scrub 시 peak 소멸 — 현재 dominant peak는 `REG_B` write/input path |
 
-부록: [검증 보고서](verification.md) — Sequential thinking으로 5개 실험 정합성 재검증.
+부록: [검증 보고서](verification.md) — Sequential thinking으로 실험 정합성 재검증.
 
 ---
 
@@ -41,10 +42,11 @@ datapath에 통합한 구조입니다. 핵심 연구 질문: 이 통합이 **분
 - 누설은 **알고리즘별로 강도가 다름** (Dilithium > Kyber, 더 넓은 operand가 더 많은
   bit-flip을 만들어서) **하지만 위치는 동일** — 4가지 알고리즘×모드 조합에서 누설
   파이프라인 stage가 같음.
-- 누설 패턴은 **multiplier 출력 + Montgomery 후반부 + 최종 출력 register의
-  operand-dependent 누설**과 일치. 두 클러스터로 분리:
-  - sample 16-30: 파이프라인이 출력 register에 도달하기까지의 영역
-  - sample 39-54: 출력값이 read-mux로 fanout되는 영역
+- A-E만 보면 peak 위치가 S7/post-result window와 겹쳐 core output 누설처럼 보인다.
+  그러나 [F](exp_F_input_write_isolation.md)의 isolation bitstream 결과, 현재 capture
+  protocol에서 dominant peak는 **마지막 `REG_B` write/input path 상태**가 지배한다.
+  따라서 A-E의 TVLA fail은 유효하지만, 그 peak를 곧바로 multiplier/MR/S7 누설로
+  localize하면 안 된다.
 
 **실제 공격 가능성**: legacy capture (`a=0xCAFEBABE`를 q로 줄이지 않고 주입) 에서는
 단순 HW CPA가 후보 공간을 줄였지만, canonical rerun에서는 true rank가 random guess와
@@ -90,9 +92,10 @@ trigger 상승. ADC가 타겟 클럭의 2배:
 | C10+ | core output 안정화 / post-result window, busy_reg는 CAPTURE_DELAY까지 유지 | 18+ |
 | C74 근처 | wrapper가 out1_wire/out2_wire를 readback register로 latch, done=1, trigger 하강 | ~146 |
 
-→ TVLA peak이 sample 18-30에 떨어진다는 것은 **S7 최종 출력 register 갱신 직후 ~
-post-result window**에 누설이 집중된다는 뜻. cluster 39-54 (음수 t)는 새 산술
-stage가 아니라 core output이 안정화된 뒤의 routing/fanout/settling 영역으로 해석한다.
+→ A-E의 TVLA peak이 sample 18-30에 떨어지는 것은 S7/post-result window와 시간상
+겹친다. 다만 Exp F 이후 이 위치만으로 core output 누설이라고 단정하지 않는다.
+현재 capture loop에서는 `REG_B` write 직후 scope를 arm하므로, 마지막 B write/input
+path 상태가 같은 window에 강하게 남을 수 있다.
 
 주의: 위 sample 번호는 Husky/Husky-Plus `adc_mul=2` 기준입니다. CW-Lite/Pro
 `adc_mul=1` 재현에서는 같은 하드웨어 cycle이 대략 절반의 sample index에 나타납니다.
