@@ -243,9 +243,11 @@ Original wrapper had `assign tio_trigger = usb_trigger;` — meaning the host ha
 a separate USB trigger pin, with USB-transaction latency (~125 µs on Husky) between the
 trigger and the actual butterfly start. Trace alignment would suffer.
 
-Changed both copies of the wrapper to `assign tio_trigger = busy_reg;`. Now `tio_trigger`
-rises and falls precisely with the FPGA's busy state, giving sub-cycle alignment. The
-bitstream must be re-synthesized after this change.
+Changed both copies of the wrapper so the default build drives
+`tio_trigger = busy_reg` via `pUSE_INTERNAL_TRIGGER=1`. Now `tio_trigger` rises and
+falls precisely with the FPGA's busy state, giving sub-cycle alignment. Set
+`pUSE_INTERNAL_TRIGGER=0` only for legacy host-toggle tests. The bitstream must be
+re-synthesized after this change.
 
 ### 6.4 Host pipeline added
 
@@ -262,11 +264,11 @@ clock-config API:
 | Scope | Clock API | Notes |
 |---|---|---|
 | ChipWhisperer-Husky / Husky-Plus | `clkgen_src`, `clkgen_freq`, `adc_mul` | requires PLL lock wait |
-| ChipWhisperer-Lite / Pro | `adc_src = "extclk_x4"` | single string API |
+| ChipWhisperer-Lite / Pro | `adc_src = "extclk_x1"` by default | single string API; use x4 only if the target clock is slowed enough for the ADC limit |
 
-It also supports a target-side device-serial filter (a default `EXCLUDE_SCOPE_SERIAL`
-plus runtime `--scope-sn` override) so it never grabs a scope that another experiment
-on the same machine is using.
+It also supports a scope-side device-serial filter (a default `EXCLUDE_SCOPE_SERIAL`
+plus runtime `--scope-sn` / `--exclude-scope-sn none` override) so it never grabs a
+scope that another experiment on the same machine is using.
 
 ### 6.5 IP file recovery
 
@@ -316,9 +318,29 @@ python3 host/capture_traces.py \
 Defaults:
 - scope auto-detect (Husky-Plus, Husky, Lite, Pro)
 - `--trigger-mode internal` (assumes the new wrapper with `tio_trigger = busy_reg`)
-- `--target-freq 96e6`, `--adc-mul 2`
+- `--target-freq 96e6`, `--adc-mul 0` (auto: Husky/Husky-Plus x2, CW-Lite/Pro x1)
 - a-input 0xCAFEBABE is reduced mod q before FPGA write, b-fixed 0x12345678 is reduced mod q, seed 0xC0FFEE for reproducibility
 - output → `host/results/<timestamp>_kyber_ct_b_first/`
+
+Portable CW-Lite/Pro repro example. This captures the same target-cycle window even
+though Lite/Pro sample at 96 MS/s by default while Husky/Husky-Plus use 192 MS/s:
+
+```bash
+python3 host/diag_trigger.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --scope-type lite --adc-mul 1 --samples 800 --exclude-scope-sn none
+
+python3 host/capture_traces.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --scope-type lite --adc-mul 1 --sample-cycles 400 \
+    --num-traces 2000 \
+    --label kyber_ct_lite_repro \
+    --mode 1 --mode2 0 --k 16 --exclude-scope-sn none
+```
+
+For Husky/Husky-Plus, omit `--scope-type` and `--adc-mul`, or use
+`--scope-type husky --adc-mul 2 --sample-cycles 400`; the script records the measured
+target clock, estimated ADC MHz, and samples-per-target-cycle in `metadata.json`.
 
 ### 7.3 Analyze for leakage
 
@@ -347,9 +369,11 @@ A peak with `|t| > 4.5` flags input-dependent leakage at that sample.
                                               --samples needed to absorb USB latency)
 --num-traces N                  default 2000
 --samples N                     default 400 (internal) — go to ~50000 for host-toggle
+--sample-cycles F               convert target cycles to samples using adc_mul
 --gain-db F                     default 25
 --target-freq F                 default 96e6   (CW305 usb_clk target)
---adc-mul N                     default 2  — ADC = target_freq * adc_mul
+--adc-mul N                     default 0  — auto: Husky x2, Lite/Pro x1
+--exclude-scope-sn SN|none      skip one shared scope during auto-detect
 --label STR                     becomes part of results-dir name
 --a, --b-fixed, --k, --mode, --mode2, --seed
                                 input controls
@@ -359,34 +383,40 @@ A peak with `|t| > 4.5` flags input-dependent leakage at that sample.
 
 `sca_config.EXCLUDE_SCOPE_SERIAL = "50203220594a48303330373133323037"` (a CW-Lite
 that another experiment uses on the same workstation). The auto-discovery never picks
-it. Pass `--scope-sn` to override.
+it. Pass `--scope-sn` to force a specific scope, or `--exclude-scope-sn none` on a
+separate workstation where no scope needs to be reserved.
 
 ---
 
 ## 9. Known issues and caveats
 
-1. **Husky PLL frequency rounding.** The corrected capture setup uses
-   `--target-freq 96e6 --adc-mul 2`. Some ChipWhisperer versions still print transient
-   PLL rounding warnings while settling, but the saved metadata should show
-   `pll_locked=true` and an ADC frequency near 192 MHz.
+1. **Clock MHz changes sample indexing.** The CW305 target clock is normally about
+   96 MHz. Husky/Husky-Plus auto-select `adc_mul=2` (about 192 MS/s, 2 samples/cycle);
+   CW-Lite/Pro auto-select `adc_mul=1` (about 96 MS/s, 1 sample/cycle). Use
+   `--sample-cycles` for cross-scope runs and compare cycles, not raw sample indices.
+   The saved metadata records measured target MHz and estimated ADC MHz.
 
-2. **Trace alignment depends on the wrapper change.** If the .bit on the FPGA was built
+2. **Husky PLL frequency rounding.** Some ChipWhisperer versions still print transient
+   PLL rounding warnings while settling, but the saved metadata should show
+   `pll_locked=true` and an ADC frequency near 192 MHz for the standard Husky setup.
+
+3. **Trace alignment depends on the wrapper change.** If the .bit on the FPGA was built
    from the *old* wrapper (`tio_trigger = usb_trigger`), `--trigger-mode internal` will
    time out with "no trigger seen". Either re-synthesize, or use `--trigger-mode host-toggle`
    with a much wider `--samples` window.
 
-3. **Two source-of-truth copies of the RTL.** Edits made in `rtl/` are not auto-mirrored
+4. **Two source-of-truth copies of the RTL.** Edits made in `rtl/` are not auto-mirrored
    into `unified_butterfly2/.srcs/sources_1/new/`. Edit both, or open Vivado and let it
    refresh.
 
-4. **The `unified_butterfly2/` workspace contains macOS `.DS_Store` files** because the
+5. **The `unified_butterfly2/` workspace contains macOS `.DS_Store` files** because the
    project came from a Mac. They're harmless and gitignored.
 
-5. **The hardware is shared.** The CW-Lite at SN `50203220594a48303330373133323037` is
-   reserved by another project; capture scripts always exclude it. Don't run other
-   ChipWhisperer experiments concurrently on the same Husky/CW305 pair.
+6. **The hardware is shared.** The CW-Lite at SN `50203220594a48303330373133323037` is
+   reserved by another project on the original workstation; capture scripts exclude it
+   by default. Use `--exclude-scope-sn none` on a standalone reproduction PC.
 
-6. **Filename typo.** `unified_bufferfly2.v` (with `bufferfly`) is preserved because
+7. **Filename typo.** `unified_bufferfly2.v` (with `bufferfly`) is preserved because
    Vivado references files by name; renaming would break the project file.
 
 ---

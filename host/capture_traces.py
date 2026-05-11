@@ -9,10 +9,10 @@ cw.list_devices() but can be overridden with --scope-type.
 Trigger handling has two modes (see --trigger-mode):
   internal     (default, recommended)
        Assumes the wrapper drives tio_trigger from busy_reg
-       (rtl/cw305_unified_butterfly2_top_v4_directwrite.v line 259).
+       (pUSE_INTERNAL_TRIGGER=1 in the CW305 wrapper).
        Capture is then perfectly aligned: rising edge = butterfly start.
   host-toggle  (legacy / fallback)
-       For an old wrapper that has  assign tio_trigger = usb_trigger.
+       For an old wrapper, or a rebuild with pUSE_INTERNAL_TRIGGER=0.
        Uses target.usb_trigger_toggle() before the start register write.
        Alignment suffers the USB-transaction gap (~125 us on Husky,
        ~1 ms on Lite); use a wider --samples and post-process align.
@@ -34,6 +34,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -46,6 +47,8 @@ from sca_config import (
     KYBER_Q, DILITHIUM_Q,
     EXCLUDE_SCOPE_SERIAL, RESULTS_ROOT,
     SCOPE_NAMES, DEFAULT_TARGET_FREQ_HZ, DEFAULT_ADC_MUL,
+    DEFAULT_ADC_MUL_BY_SCOPE, HUSKY_MAX_ADC_HZ, LITE_PRO_MAX_ADC_HZ,
+    CLOCK_WARN_RATIO,
 )
 
 
@@ -59,11 +62,41 @@ def _device_name(d):
 def _device_sn(d):
     return (d.get("sn") or d.get("serial") or "").lower()
 
-def _is_scope(d):
-    return _device_name(d).startswith("ChipWhisperer-")
-
 def _is_cw305_target(d):
     return "CW305" in _device_name(d).upper()
+
+def _clean_optional_sn(sn):
+    if sn is None:
+        return ""
+    sn = str(sn).strip().lower()
+    return "" if sn in ("", "none", "no", "false", "-") else sn
+
+def _normalized_name(name):
+    return str(name or "").lower().replace("_", "-").replace(" ", "-")
+
+def scope_type_from_name(name):
+    """Return one of {'husky-plus', 'husky', 'lite', 'pro', 'nano', 'unknown'}."""
+    norm = _normalized_name(name)
+    if "husky-plus" in norm:
+        return "husky-plus"
+    if "husky" in norm:
+        return "husky"
+    if "lite" in norm:
+        return "lite"
+    if "pro" in norm:
+        return "pro"
+    if "nano" in norm:
+        return "nano"
+
+    # Fallback to exact NewAE prefixes for older cw.list_devices() outputs.
+    for kind in ("husky-plus", "husky", "lite", "pro", "nano"):
+        for prefix in SCOPE_NAMES[kind]:
+            if str(name or "").startswith(prefix):
+                return kind
+    return "unknown"
+
+def _is_scope(d):
+    return (not _is_cw305_target(d)) and scope_type_from_name(_device_name(d)) != "unknown"
 
 def list_chipwhisperer_devices():
     import chipwhisperer as cw
@@ -75,29 +108,31 @@ def list_chipwhisperer_devices():
     return []
 
 def print_devices(devices, exclude_sn):
+    exclude_sn = _clean_optional_sn(exclude_sn)
     print(f"[devs] {len(devices)} ChipWhisperer device(s) detected:")
     for d in devices:
         sn   = _device_sn(d)
         name = _device_name(d) or "?"
         kind = "scope " if _is_scope(d) else ("target" if _is_cw305_target(d) else "???   ")
-        marker = "  (EXCLUDED)" if sn == exclude_sn.lower() else ""
+        marker = "  (EXCLUDED)" if exclude_sn and sn == exclude_sn else ""
         print(f"        [{kind}] {name:30s} sn={sn}{marker}")
 
 def find_scope_serial(devices, exclude_sn, override=None):
     if override:
         print(f"[scope] using user-specified serial: {override}")
         return override
+    exclude_sn = _clean_optional_sn(exclude_sn)
     candidates = [
         _device_sn(d) for d in devices
-        if _is_scope(d) and _device_sn(d) != exclude_sn.lower()
+        if _is_scope(d) and _device_sn(d) != exclude_sn
     ]
     if len(candidates) == 1:
         print(f"[scope] auto-selected sn={candidates[0]}")
         return candidates[0]
     if len(candidates) == 0:
+        excluded_msg = f" (excluded {exclude_sn})" if exclude_sn else ""
         raise RuntimeError(
-            f"No eligible ChipWhisperer scope (excluded {exclude_sn}). "
-            f"Pass --scope-sn."
+            f"No eligible ChipWhisperer scope{excluded_msg}. Pass --scope-sn."
         )
     raise RuntimeError(
         f"Multiple eligible scopes: {candidates}. Pass --scope-sn to disambiguate."
@@ -125,12 +160,7 @@ def detect_scope_type(devices, scope_sn):
         if _device_sn(d) == (scope_sn or "").lower():
             name = _device_name(d)
             break
-    # Order matters: 'husky-plus' must be checked before 'husky'.
-    for kind in ("husky-plus", "husky", "lite", "pro", "nano"):
-        for prefix in SCOPE_NAMES[kind]:
-            if name.startswith(prefix):
-                return kind
-    return "unknown"
+    return scope_type_from_name(name)
 
 
 # ----------------------------------------------------------------------------
@@ -194,6 +224,103 @@ def _wait_for_pll_lock(scope, timeout=2.0):
         time.sleep(0.05)
     return False, last_status
 
+def resolve_adc_mul(scope_type, requested_adc_mul, target_freq):
+    """Choose a board-safe ADC multiplier.
+
+    requested_adc_mul of 0 or None means "auto": Husky/Husky-Plus use x2,
+    CW-Lite/Pro use x1 because the 96 MHz CW305 clock is already near their
+    ADC limit.
+    """
+    requested_auto = requested_adc_mul in (None, 0)
+    adc_mul = (
+        DEFAULT_ADC_MUL_BY_SCOPE.get(scope_type, DEFAULT_ADC_MUL)
+        if requested_auto else int(requested_adc_mul)
+    )
+
+    if scope_type in ("lite", "pro"):
+        if adc_mul not in (1, 4):
+            print(f"[scope] WARNING: {scope_type} supports extclk_x1/x4 here; "
+                  f"adc_mul={adc_mul} is unsafe for portable runs, using x1.")
+            adc_mul = 1
+        estimated_adc_hz = float(target_freq) * adc_mul
+        if estimated_adc_hz > LITE_PRO_MAX_ADC_HZ:
+            print(f"[scope] WARNING: {scope_type} estimated ADC clock "
+                  f"{estimated_adc_hz/1e6:.1f} MHz exceeds the portable "
+                  f"{LITE_PRO_MAX_ADC_HZ/1e6:.0f} MHz limit; using extclk_x1. "
+                  f"Only use x4 when the target clock is deliberately slowed.")
+            adc_mul = 1
+    elif scope_type in ("husky", "husky-plus"):
+        estimated_adc_hz = float(target_freq) * adc_mul
+        if estimated_adc_hz > HUSKY_MAX_ADC_HZ:
+            print(f"[scope] WARNING: estimated Husky ADC clock "
+                  f"{estimated_adc_hz/1e6:.1f} MHz exceeds "
+                  f"{HUSKY_MAX_ADC_HZ/1e6:.0f} MHz; lower --adc-mul.")
+
+    source = "auto" if requested_auto else "user"
+    print(f"[scope] adc_mul={adc_mul} ({source}, scope_type={scope_type})")
+    return int(adc_mul), source
+
+def measure_external_clock(scope):
+    """Best-effort frequency counter read for the CW305 clock on the CW connector."""
+    if not hasattr(scope.clock, "freq_ctr_src"):
+        return None
+    try:
+        scope.clock.freq_ctr_src = "extclk"
+    except Exception as e:
+        return f"freq_ctr_src error: {e}"
+    time.sleep(0.3)
+    try:
+        return float(scope.clock.freq_ctr)
+    except Exception as e:
+        return f"freq_ctr error: {e}"
+
+def add_clock_report(scope_settings, measured_target_freq, expected_target_freq):
+    adc_mul = float(scope_settings.get("adc_mul", 1))
+    target_freq_for_est = float(expected_target_freq)
+
+    if isinstance(measured_target_freq, (int, float)) and measured_target_freq > 0:
+        measured = float(measured_target_freq)
+        scope_settings["measured_target_freq_hz"] = measured
+        target_freq_for_est = measured
+        err = abs(measured - float(expected_target_freq)) / max(float(expected_target_freq), 1.0)
+        scope_settings["target_freq_error_ratio"] = err
+        msg = (f"[clock] measured target clock = {measured/1e6:.3f} MHz "
+               f"(expected {float(expected_target_freq)/1e6:.3f} MHz)")
+        if err > CLOCK_WARN_RATIO:
+            msg += "  WARNING: large clock mismatch; check cabling/bitstream or pass --target-freq."
+        print(msg)
+    elif measured_target_freq is not None:
+        scope_settings["measured_target_freq_hz"] = str(measured_target_freq)
+        print(f"[clock] target clock measurement unavailable: {measured_target_freq}")
+    else:
+        scope_settings["measured_target_freq_hz"] = None
+        print("[clock] scope has no freq counter; using --target-freq for metadata")
+
+    scope_settings["target_freq_hz"] = float(expected_target_freq)
+    scope_settings["adc_freq_est_hz"] = target_freq_for_est * adc_mul
+    scope_settings["samples_per_target_cycle"] = adc_mul
+    return scope_settings
+
+def apply_sample_cycles(scope, scope_settings, sample_cycles):
+    if sample_cycles is None:
+        scope_settings["samples"] = int(scope.adc.samples)
+        scope_settings["sample_cycles_est"] = (
+            float(scope.adc.samples) /
+            max(float(scope_settings.get("samples_per_target_cycle", 1.0)), 1e-9)
+        )
+        return int(scope.adc.samples)
+
+    samples_per_cycle = float(scope_settings.get("samples_per_target_cycle", 1.0))
+    samples = max(1, int(math.ceil(float(sample_cycles) * samples_per_cycle)))
+    scope.adc.samples = samples
+    actual = int(scope.adc.samples)
+    scope_settings["samples"] = actual
+    scope_settings["sample_cycles_requested"] = float(sample_cycles)
+    scope_settings["sample_cycles_est"] = actual / max(samples_per_cycle, 1e-9)
+    print(f"[scope] sample window: {sample_cycles:g} target cycles -> "
+          f"{actual} ADC samples ({samples_per_cycle:g} sample/cycle)")
+    return actual
+
 def setup_scope(scope, scope_type, samples, gain_db, target_freq, adc_mul):
     # Common settings (work on both Husky and Lite/Pro).
     scope.gain.db          = gain_db
@@ -235,17 +362,18 @@ def setup_scope(scope, scope_type, samples, gain_db, target_freq, adc_mul):
             "clkgen_freq": float(target_freq),
             "adc_mul":     int(adc_mul),
             "adc_freq":    adc_freq,
+            "adc_freq_est_hz": float(target_freq) * int(adc_mul),
+            "samples_per_target_cycle": int(adc_mul),
             "pll_locked":  bool(ok),
         })
     elif scope_type in ("lite", "pro"):
         # CW-Lite / CW-Pro single-string API. Only x1 and x4 are universally supported.
-        if adc_mul not in (1, 4):
-            print(f"[scope] WARNING: adc_mul={adc_mul} on {scope_type} — clamping to 4")
-            adc_mul = 4
         scope.clock.adc_src = f"extclk_x{adc_mul}"
         settings.update({
             "adc_src": str(scope.clock.adc_src),
             "adc_mul": int(adc_mul),
+            "adc_freq_est_hz": float(target_freq) * int(adc_mul),
+            "samples_per_target_cycle": int(adc_mul),
         })
     else:
         raise RuntimeError(
@@ -393,6 +521,8 @@ def main():
     p.add_argument("--no-program", action="store_true", help="Skip FPGA programming")
     p.add_argument("--scope-sn",  default=None, help="Override scope serial (else auto)")
     p.add_argument("--target-sn", default=None, help="Override CW305 target serial (else auto)")
+    p.add_argument("--exclude-scope-sn", default=EXCLUDE_SCOPE_SERIAL,
+                   help="Scope serial to skip during auto-detect; use 'none' to disable")
     p.add_argument("--scope-type", default="auto",
                    choices=["auto", "husky-plus", "husky", "lite", "pro"],
                    help="Scope kind. 'auto' detects from cw.list_devices() name field")
@@ -406,12 +536,17 @@ def main():
                    help="ADC samples per trace. With --trigger-mode internal, ~144 "
                         "covers the 72-cycle butterfly at adc_mul=2. With host-toggle "
                         "you need much wider (e.g. 50000) to absorb USB-latency gap.")
+    p.add_argument("--sample-cycles", type=float, default=None,
+                   help="Set capture length in target-clock cycles instead of raw ADC "
+                        "samples. The script converts using the scope-specific ADC "
+                        "multiplier (Husky auto=x2, Lite/Pro auto=x1).")
     p.add_argument("--gain-db",     type=float, default=25.0)
     p.add_argument("--target-freq", type=float, default=DEFAULT_TARGET_FREQ_HZ,
                    help="External clock frequency (CW305 usb_clk, Hz). "
                         "Used by Husky to lock its PLL.")
-    p.add_argument("--adc-mul", type=int, default=DEFAULT_ADC_MUL,
-                   help="ADC oversample multiplier on top of target clock.")
+    p.add_argument("--adc-mul", type=int, default=0,
+                   help="ADC oversample multiplier on top of target clock. "
+                        "0=auto: Husky/Husky-Plus x2, CW-Lite/Pro x1.")
     p.add_argument("--label", default="kyber_ct_b_random",
                    help="Short label, used in results folder name")
     # Fixed inputs across all traces:
@@ -445,9 +580,11 @@ def main():
 
     import chipwhisperer as cw
 
+    exclude_scope_sn = _clean_optional_sn(args.exclude_scope_sn)
+
     devices = list_chipwhisperer_devices()
-    print_devices(devices, EXCLUDE_SCOPE_SERIAL)
-    scope_sn  = find_scope_serial(devices, EXCLUDE_SCOPE_SERIAL, override=args.scope_sn)
+    print_devices(devices, exclude_scope_sn)
+    scope_sn  = find_scope_serial(devices, exclude_scope_sn, override=args.scope_sn)
     target_sn = find_target_serial(devices, override=args.target_sn)
 
     scope_type = args.scope_type
@@ -459,14 +596,10 @@ def main():
                 "Could not auto-detect scope type. Pass --scope-type explicitly."
             )
 
+    adc_mul, adc_mul_source = resolve_adc_mul(scope_type, args.adc_mul, args.target_freq)
+
     print("[scope] connecting...")
     scope = cw.scope(sn=scope_sn) if scope_sn else cw.scope()
-    scope_settings = setup_scope(
-        scope, scope_type=scope_type,
-        samples=args.samples, gain_db=args.gain_db,
-        target_freq=args.target_freq, adc_mul=args.adc_mul,
-    )
-    print(f"[scope] settings: {json.dumps(scope_settings, indent=None)}")
 
     print("[target] connecting...")
     target_kwargs = {"sn": target_sn} if target_sn else {}
@@ -481,13 +614,24 @@ def main():
     if fpga_id != 0xC4:
         print("[target] WARNING: ID mismatch — wrapper may not be the v4 directwrite build")
 
+    scope_settings = setup_scope(
+        scope, scope_type=scope_type,
+        samples=args.samples, gain_db=args.gain_db,
+        target_freq=args.target_freq, adc_mul=adc_mul,
+    )
+    scope_settings["adc_mul_source"] = adc_mul_source
+    measured_target_freq = measure_external_clock(scope)
+    add_clock_report(scope_settings, measured_target_freq, args.target_freq)
+    capture_samples = apply_sample_cycles(scope, scope_settings, args.sample_cycles)
+    print(f"[scope] settings: {json.dumps(scope_settings, indent=None)}")
+
     out_dir = make_results_dir(args.label)
     print(f"[out] results dir: {out_dir}")
 
     try:
         traces, b_arr, groups, out1_arr, out2_arr, k_arr = capture_loop(
             scope, target,
-            n_traces=args.num_traces, samples=args.samples,
+            n_traces=args.num_traces, samples=capture_samples,
             a=a_mod, k=args.k, mode=args.mode, mode2=args.mode2,
             b_fixed=args.b_fixed, q=q,
             seed=args.seed,
@@ -522,10 +666,10 @@ def main():
         "timestamp_utc":   dt.datetime.utcnow().isoformat() + "Z",
         "label":           args.label,
         "num_traces":      args.num_traces,
-        "samples":         args.samples,
+        "samples":         capture_samples,
         "scope_serial":    scope_sn,
         "target_serial":   target_sn,
-        "excluded_serial": EXCLUDE_SCOPE_SERIAL,
+        "excluded_serial": exclude_scope_sn,
         "scope_settings":  scope_settings,
         "trigger_mode":    args.trigger_mode,
         "fixed_inputs":    {

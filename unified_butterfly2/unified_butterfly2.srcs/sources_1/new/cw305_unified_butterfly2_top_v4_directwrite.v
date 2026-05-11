@@ -26,7 +26,8 @@
  */
 module cw305_unified_butterfly2_top_v4 #(
     parameter pBYTECNT_SIZE = 7,
-    parameter pADDR_WIDTH   = 21
+    parameter pADDR_WIDTH   = 21,
+    parameter pUSE_INTERNAL_TRIGGER = 1
 )(
     input  wire                         usb_clk,
     inout  wire [7:0]                   usb_data,
@@ -256,11 +257,9 @@ module cw305_unified_butterfly2_top_v4 #(
     assign led2 = busy_reg;
     assign led3 = (direct_write_count != 8'd0);
 
-    // tio_trigger is asserted while a butterfly evaluation is in flight.
-    // Driving it from busy_reg (instead of the host-controlled usb_trigger pin)
-    // gives the side-channel scope a sub-cycle-accurate alignment window:
-    // rising edge = exact start cycle, falling edge = capture-delay completion.
-    assign tio_trigger = busy_reg;
+    // Default SCA build: trigger is asserted while a butterfly evaluation is
+    // in flight. Set pUSE_INTERNAL_TRIGGER=0 only for legacy host-toggle tests.
+    assign tio_trigger = pUSE_INTERNAL_TRIGGER ? busy_reg : usb_trigger;
     assign tio_clkout  = usb_clk_buf;
 
 endmodule

@@ -21,6 +21,7 @@ is used.
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -29,7 +30,19 @@ from sca_config import (
     REG_A, REG_B, REG_K, REG_CTRL, REG_STATUS, REG_OUT1, REG_OUT2,
     REG_WRCOUNT, REG_LAST_ADDR, REG_LAST_BYTE, REG_LAST_DATA, REG_FE_WRCOUNT,
     REG_ID, DONE_MASK, BUSY_MASK,
-    EXCLUDE_SCOPE_SERIAL,
+    EXCLUDE_SCOPE_SERIAL, DEFAULT_TARGET_FREQ_HZ,
+)
+from capture_traces import (
+    _clean_optional_sn,
+    list_chipwhisperer_devices,
+    print_devices,
+    find_scope_serial,
+    find_target_serial,
+    detect_scope_type,
+    resolve_adc_mul,
+    setup_scope,
+    measure_external_clock,
+    add_clock_report,
 )
 
 
@@ -38,76 +51,6 @@ def banner(label):
     print("=" * 72)
     print(f"  {label}")
     print("=" * 72)
-
-
-def find_husky_serial():
-    import chipwhisperer as cw
-    devs = cw.list_devices() or []
-    candidates = []
-    for d in devs:
-        name = (d.get("name") or "").lower()
-        sn = (d.get("sn") or d.get("serial") or "").lower()
-        if "husky" in name and sn != EXCLUDE_SCOPE_SERIAL.lower():
-            candidates.append((sn, name))
-    if not candidates:
-        return None
-    return candidates[0][0]
-
-
-def find_lite_serial():
-    import chipwhisperer as cw
-    devs = cw.list_devices() or []
-    for d in devs:
-        name = (d.get("name") or "").lower()
-        sn = (d.get("sn") or d.get("serial") or "").lower()
-        if "lite" in name and sn != EXCLUDE_SCOPE_SERIAL.lower():
-            return sn
-    return None
-
-
-def find_target_serial():
-    import chipwhisperer as cw
-    devs = cw.list_devices() or []
-    for d in devs:
-        name = (d.get("name") or "").upper()
-        sn = (d.get("sn") or d.get("serial") or "").lower()
-        if "CW305" in name:
-            return sn
-    return None
-
-
-def setup_scope_safe(scope, scope_kind, target_freq=96_000_000.0, adc_mul=2):
-    """CW305 usb_clk is ~96 MHz when healthy. adc_mul=2 -> 192 MHz ADC, safe."""
-    scope.gain.db          = 25.0
-    scope.adc.samples      = 2000
-    scope.adc.offset       = 0
-    scope.adc.basic_mode   = "rising_edge"
-    scope.adc.timeout      = 1
-    scope.trigger.triggers = "tio4"
-    scope.io.tio1          = "serial_rx"
-    scope.io.tio2          = "serial_tx"
-    scope.io.hs2           = "disabled"
-    if scope_kind in ("husky-plus", "husky"):
-        scope.clock.clkgen_src  = "extclk"
-        scope.clock.clkgen_freq = float(target_freq)
-        scope.clock.adc_mul     = int(adc_mul)
-    else:
-        scope.clock.adc_src = "extclk_x4"
-    time.sleep(0.3)
-
-
-def measure_external_clock(scope):
-    if not hasattr(scope.clock, "freq_ctr_src"):
-        return None
-    try:
-        scope.clock.freq_ctr_src = "extclk"
-    except Exception as e:
-        return f"freq_ctr_src error: {e}"
-    time.sleep(0.3)
-    try:
-        return float(scope.clock.freq_ctr)
-    except Exception as e:
-        return f"freq_ctr error: {e}"
 
 
 def read_pll_state(scope, scope_kind):
@@ -142,16 +85,26 @@ def fpga_write_bytes(target, addr, data):
 
 
 def main():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--bitfile",
                    default=str(Path(__file__).resolve().parent.parent /
                                "bitstream" / "cw305_unified_butterfly2_top_v4.bit"))
     p.add_argument("--no-program", action="store_true")
     p.add_argument("--scope-sn", default=None)
-    p.add_argument("--target-freq", type=float, default=96_000_000.0,
+    p.add_argument("--target-sn", default=None)
+    p.add_argument("--exclude-scope-sn", default=EXCLUDE_SCOPE_SERIAL,
+                   help="Scope serial to skip during auto-detect; use 'none' to disable")
+    p.add_argument("--scope-type", default="auto",
+                   choices=["auto", "husky-plus", "husky", "lite", "pro"],
+                   help="Scope kind. 'auto' detects from cw.list_devices() name field")
+    p.add_argument("--target-freq", type=float, default=DEFAULT_TARGET_FREQ_HZ,
                    help="Expected target usb_clk frequency. Healthy CW305 = 96 MHz.")
-    p.add_argument("--adc-mul", type=int, default=2,
-                   help="Husky ADC multiplier; 96e6 * 2 = 192 MHz ADC, safe.")
+    p.add_argument("--adc-mul", type=int, default=0,
+                   help="ADC oversample multiplier. 0=auto: Husky/Husky-Plus x2, CW-Lite/Pro x1.")
+    p.add_argument("--samples", type=int, default=2000,
+                   help="Samples for the trigger-detection capture.")
+    p.add_argument("--host-toggle-samples", type=int, default=50000,
+                   help="Samples for the legacy host-toggle control experiment.")
     args = p.parse_args()
 
     import chipwhisperer as cw
@@ -162,37 +115,25 @@ def main():
         return 2
 
     # ----- Stage A: scope connect + clock lock -----
-    banner("Stage A — scope connect + clock lock")
-    scope_sn = args.scope_sn or find_husky_serial() or find_lite_serial()
-    if not scope_sn:
-        print("ERROR: no eligible scope found", file=sys.stderr)
-        return 2
+    banner("Stage A — device discovery + scope connect")
+    exclude_scope_sn = _clean_optional_sn(args.exclude_scope_sn)
+    devs = list_chipwhisperer_devices()
+    print_devices(devs, exclude_scope_sn)
+    scope_sn = find_scope_serial(devs, exclude_scope_sn, override=args.scope_sn)
+    target_sn = find_target_serial(devs, override=args.target_sn)
 
-    devs = cw.list_devices() or []
-    scope_name = next(
-        (d.get("name") or "" for d in devs
-         if (d.get("sn") or d.get("serial") or "").lower() == scope_sn.lower()),
-        ""
-    )
-    print(f"  scope: {scope_name}  sn={scope_sn}")
-
-    scope_kind = "lite"
-    if "Husky-Plus" in scope_name:
-        scope_kind = "husky-plus"
-    elif "Husky" in scope_name:
-        scope_kind = "husky"
-    elif "Pro" in scope_name:
-        scope_kind = "pro"
+    scope_kind = args.scope_type
+    if scope_kind == "auto":
+        scope_kind = detect_scope_type(devs, scope_sn)
+        if scope_kind == "unknown":
+            print("ERROR: could not auto-detect scope type; pass --scope-type", file=sys.stderr)
+            return 2
+    adc_mul, adc_mul_source = resolve_adc_mul(scope_kind, args.adc_mul, args.target_freq)
     print(f"  scope_kind = {scope_kind}")
-
     scope = cw.scope(sn=scope_sn)
-    setup_scope_safe(scope, scope_kind, args.target_freq, args.adc_mul)
-    pll = read_pll_state(scope, scope_kind)
-    print(f"  PLL state: {pll}")
 
     # ----- target connect (with optional reprogram) -----
     banner("Stage B — target connect")
-    target_sn = find_target_serial()
     print(f"  CW305 sn={target_sn}")
     tk = {"sn": target_sn} if target_sn else {}
     if args.no_program:
@@ -205,12 +146,19 @@ def main():
     fpga_id = fpga_read_byte(target, REG_ID)
     print(f"  REG_ID  (0x7E) = 0x{fpga_id:02x}   (expect 0xC4)")
 
-    # ----- external clock measurement (after target programmed) -----
-    banner("Stage A.2 — measure external clock (target now driving usb_clk)")
+    # ----- scope setup + external clock measurement (after target programmed) -----
+    banner("Stage A.2 — scope clock setup + external clock measurement")
+    scope_settings = setup_scope(
+        scope, scope_type=scope_kind,
+        samples=args.samples, gain_db=25.0,
+        target_freq=args.target_freq, adc_mul=adc_mul,
+    )
+    scope_settings["adc_mul_source"] = adc_mul_source
     ext = measure_external_clock(scope)
-    print(f"  scope.clock.freq_ctr = {ext}")
+    add_clock_report(scope_settings, ext, args.target_freq)
+    print(f"  scope settings: {json.dumps(scope_settings, indent=None)}")
     pll = read_pll_state(scope, scope_kind)
-    print(f"  PLL state after measurement: {pll}")
+    print(f"  PLL/clock state after setup: {pll}")
 
     # ----- Stage B continued: register read/write echo -----
     banner("Stage C — register R/W + direct_write_count")
@@ -310,7 +258,11 @@ def main():
         fpga_write_bytes(target, REG_STATUS, [0x02])
         time.sleep(0.005)
         # Use a wider sample window for this mode (USB latency margin).
-        scope.adc.samples = 50000
+        host_toggle_samples = int(args.host_toggle_samples)
+        if scope_kind in ("lite", "pro") and host_toggle_samples > 20000:
+            print("  limiting host-toggle control capture to 20000 samples for CW-Lite/Pro")
+            host_toggle_samples = 20000
+        scope.adc.samples = host_toggle_samples
         scope.arm()
         target.usb_trigger_toggle()
         fpga_write_bytes(target, REG_STATUS, [0x01])

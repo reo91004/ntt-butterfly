@@ -39,11 +39,20 @@ TVLA_THRESHOLD = 4.5
 # USB-FIFO endpoint is desynced/stuck, the clock can degrade to ~10 MHz,
 # but that's a transient bring-up issue (replug the cable to recover).
 #
-# adc_mul = 2 gives a 192 MHz ADC clock, comfortably inside Husky's 250 MHz
-# spec. adc_mul = 4 (384 MHz) exceeds the spec and Husky will silently
-# clamp it down with warnings; we therefore default to 2.
+# Husky/Husky-Plus can safely oversample the 96 MHz CW305 clock by 2
+# (192 MS/s). CW-Lite/Pro top out near 105 MS/s, so they should sample the
+# same clock at x1 unless the target clock is deliberately slowed down.
 DEFAULT_TARGET_FREQ_HZ = 96_000_000
 DEFAULT_ADC_MUL        = 2
+DEFAULT_ADC_MUL_BY_SCOPE = {
+    "husky-plus": 2,
+    "husky":      2,
+    "lite":       1,
+    "pro":        1,
+}
+HUSKY_MAX_ADC_HZ    = 250_000_000
+LITE_PRO_MAX_ADC_HZ = 105_000_000
+CLOCK_WARN_RATIO    = 0.05
 
 # Device-name prefixes used to auto-detect scope type from cw.list_devices().
 SCOPE_NAMES = {

@@ -56,6 +56,10 @@ datapath에 통합한 구조입니다. 핵심 연구 질문: 이 통합이 **분
 
 ## 모든 실험 공통 파라미터
 
+아래 표는 이 문서에 기록된 canonical 결과의 원래 측정 조건입니다. 새 PC에서
+CW-Lite/Pro로 재현할 때는 ADC MHz가 달라지므로 바로 아래 “재현 방법”의
+`--sample-cycles` 예시처럼 target cycle 기준으로 캡처 길이를 맞추세요.
+
 | 항목 | 값 | 비고 |
 |---|---|---|
 | 하드웨어 | CW305 + ChipWhisperer-Husky-Plus | 20-pin connector, X4 SMA on Vcc-int |
@@ -89,12 +93,37 @@ trigger 상승. ADC가 타겟 클럭의 2배:
 busy idle 구간**에 누설이 집중된다는 뜻. cluster 39-54 (음수 t)는 출력값이
 read_mux로 fanout되며 register 안정화되는 영역.
 
+주의: 위 sample 번호는 Husky/Husky-Plus `adc_mul=2` 기준입니다. CW-Lite/Pro
+`adc_mul=1` 재현에서는 같은 하드웨어 cycle이 대략 절반의 sample index에 나타납니다.
+서로 다른 scope 결과를 비교할 때는 `metadata.json`의 `samples_per_target_cycle`로
+cycle index를 환산하세요.
+
 ---
 
 ## 재현 방법
 
 각 실험 문서가 정확한 명령을 명시. 공통 요건은 sca-py 가상환경 (`pyenv activate sca`)
-+ `chipwhisperer numpy matplotlib`, 그리고 CW305 + Husky-Plus 하드웨어 연결.
++ `chipwhisperer numpy matplotlib`, 그리고 CW305 + 지원되는 CW scope
+(Husky/Husky-Plus/Lite/Pro) 하드웨어 연결.
+
+CW-Lite/Pro 재현 예시:
+
+```bash
+python3 host/diag_trigger.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --scope-type lite --adc-mul 1 --samples 800 --exclude-scope-sn none
+
+python3 host/capture_traces.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --scope-type lite --adc-mul 1 --sample-cycles 400 \
+    --num-traces 2000 \
+    --label kyber_ct_lite_repro \
+    --mode 1 --mode2 0 --k 16 --exclude-scope-sn none
+```
+
+Husky/Husky-Plus는 `--adc-mul 0`(auto)에서 2 sample/cycle, CW-Lite/Pro는 1
+sample/cycle입니다. `metadata.json`에 measured target MHz, estimated ADC MHz,
+samples-per-target-cycle이 저장됩니다.
 
 `host/results/<timestamp>_<label>/` 폴더 안에 다음이 저장됨:
 - `traces.npy` — raw ADC traces (N, samples) float32
