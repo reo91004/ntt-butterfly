@@ -148,7 +148,7 @@ butterfly arithmetic 결과보다 **마지막 `REG_B` write/input path 상태**�
 > start-triggered capture window에 강하게 남는다. 따라서 A-E의 TVLA fail은 유효하지만,
 > 그 peak를 곧바로 multiplier/MR/S7 누설로 localize하면 안 된다.
 
-## 다음 실험
+## 후속 실험
 
 진짜 butterfly core leakage를 보려면 capture protocol을 바꿔야 한다.
 
@@ -158,8 +158,14 @@ butterfly arithmetic 결과보다 **마지막 `REG_B` write/input path 상태**�
 4. 이 상태에서 TVLA가 남으면 core arithmetic leakage다.
 5. 이 상태에서 TVLA가 사라지면 지금까지의 강한 peak는 대부분 input/write path leakage다.
 
-이 구조 없이 masking이나 delay를 바로 논하면 위험하다. 현재 dominant peak는 core masking
-대상이라기보다 measurement/input interface artifact에 가깝기 때문이다.
+이 구조 없이 masking이나 delay를 바로 논하면 위험하다. normal capture의 dominant peak는
+core masking 대상이라기보다 measurement/input interface artifact가 크게 섞였기 때문이다.
+
+이 후속 실험은 [Exp G](exp_G_core_preload_isolation.md)에서 수행했다. 결과적으로 external
+`REG_B` start 값을 fixed로 scrub해도 내부 `b_core`가 fixed/random으로 바뀌면
+`|t|=29.8-33.7`의 강한 TVLA peak가 남았다. 따라서 Exp F의 결론은 "normal capture peak에
+write path가 섞인다"이고, Exp G까지 포함한 최신 결론은 "그 영향을 제거해도 butterfly
+core/Montgomery/S7 이후 값 의존 누설이 실제로 존재한다"이다.
 
 ## 보안 대책 방향
 

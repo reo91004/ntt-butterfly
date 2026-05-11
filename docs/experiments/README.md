@@ -23,6 +23,7 @@
 | [D](exp_D_bit_specific_tvla.md) | 비트별 TVLA | (A/B/C 데이터 재분석) | random-b only | fixed half 제거 후 Kyber 4-5 bits, Dilithium 3-11 bits만 임계 통과 — "전 bit 균등 HW" 결론 철회 |
 | [E](exp_E_cpa.md) | CPA — 공격 가능성 점검 | yes (vary k) | b fixed=1291 | canonical rerun에서 true rank 1550/1829 수준 — naive HW CPA exploitable 결론 미확인 |
 | [F](exp_F_input_write_isolation.md) | 입력 write path 분리 | temporary variants | b write varies | core/S7를 끊어도 peak 유지, arm 직전 fixed B scrub 시 peak 소멸 — 현재 dominant peak는 `REG_B` write/input path |
+| [G](exp_G_core_preload_isolation.md) | preload/scrub core-only 분리 | yes | b_core varies | `REG_B` start 값 fixed인데도 core-only TVLA peak `|t|=29.8-33.7` — butterfly core 누설 확인 |
 
 부록: [검증 보고서](verification.md) — Sequential thinking으로 실험 정합성 재검증.
 
@@ -43,10 +44,12 @@ datapath에 통합한 구조입니다. 핵심 연구 질문: 이 통합이 **분
   bit-flip을 만들어서) **하지만 위치는 동일** — 4가지 알고리즘×모드 조합에서 누설
   파이프라인 stage가 같음.
 - A-E만 보면 peak 위치가 S7/post-result window와 겹쳐 core output 누설처럼 보인다.
-  그러나 [F](exp_F_input_write_isolation.md)의 isolation bitstream 결과, 현재 capture
-  protocol에서 dominant peak는 **마지막 `REG_B` write/input path 상태**가 지배한다.
-  따라서 A-E의 TVLA fail은 유효하지만, 그 peak를 곧바로 multiplier/MR/S7 누설로
-  localize하면 안 된다.
+  [F](exp_F_input_write_isolation.md)는 normal capture의 강한 peak에 **마지막
+  `REG_B` write/input path 상태**가 크게 섞인다는 것을 보였다. 이어서
+  [G](exp_G_core_preload_isolation.md)는 `REG_B` start 값을 fixed로 scrub하고 내부
+  preload로만 `b_core`를 바꿔도 `|t|=29.8-33.7` peak가 남는다는 것을 보였다.
+  따라서 최신 결론은 **입력 write path artifact만이 아니라 butterfly core/Montgomery/S7
+  이후 값 의존 누설도 실제로 존재한다**이다.
 
 **실제 공격 가능성**: legacy capture (`a=0xCAFEBABE`를 q로 줄이지 않고 주입) 에서는
 단순 HW CPA가 후보 공간을 줄였지만, canonical rerun에서는 true rank가 random guess와
@@ -65,18 +68,18 @@ CW-Lite/Pro로 재현할 때는 ADC MHz가 달라지므로 바로 아래 “재�
 | 항목 | 값 | 비고 |
 |---|---|---|
 | 하드웨어 | CW305 + ChipWhisperer-Husky-Plus | 20-pin connector, X4 SMA on Vcc-int |
-| Bitstream | `bitstream/cw305_unified_butterfly2_top_v4.bit` | wrapper의 `tio_trigger = busy_reg` 사용 |
+| Bitstream | `bitstream/cw305_unified_butterfly2_top_v4.bit` | wrapper의 `tio_trigger = trigger_reg` 사용 |
 | 타겟 클럭 | 96 MHz (CW305 usb_clk) | `scope.clock.freq_ctr` 측정값 |
 | ADC | 192 MHz (Husky `clkgen_freq=96e6 adc_mul=2`) | 타겟 cycle당 2 ADC sample |
-| Trigger | `internal` (busy_reg → tio_trigger → scope tio4) | sub-cycle 정렬 |
+| Trigger | `internal` (trigger_reg → tio_trigger → scope tio4) | default delay 0에서는 start와 정렬 |
 | Sample window | 800 samples | core 결과 + post-result window 포함 |
 | RNG seed | 0xC0FFEE | A/B/C에서 동일 — paired 비교 가능 |
 | Host input normalization | `a`와 `b_fixed`를 q로 reduction 후 주입 | RTL의 butterfly 산술 전제 (`a,b < q`) 와 정합 |
 
 ## 파이프라인 매핑 (sample → cycle)
 
-wrapper가 `tio_trigger = busy_reg`로 구동. host의 `REG_STATUS=0x01` 쓰기 1 cycle 후
-trigger 상승. ADC가 타겟 클럭의 2배:
+wrapper가 `tio_trigger = trigger_reg`로 구동. default `trigger_delay_cycles=0`에서는
+host의 `REG_STATUS=0x01` start write 직후 trigger가 상승한다. ADC가 타겟 클럭의 2배:
 
 | Cycle | 발생 동작 | ADC samples |
 |---|---|---|

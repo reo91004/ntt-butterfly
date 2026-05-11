@@ -8,7 +8,7 @@ cw.list_devices() but can be overridden with --scope-type.
 
 Trigger handling has two modes (see --trigger-mode):
   internal     (default, recommended)
-       Assumes the wrapper drives tio_trigger from busy_reg
+       Assumes the wrapper drives tio_trigger from trigger_reg
        (pUSE_INTERNAL_TRIGGER=1 in the CW305 wrapper).
        Capture is then perfectly aligned: rising edge = butterfly start.
   host-toggle  (legacy / fallback)
@@ -30,7 +30,8 @@ Per trace:
 Stored under  results/<timestamp>_<label>/  :
     traces.npy        (N, samples) float32
     inputs.npz        a, b, b_first_write, b_effective_start, k, mode, mode2,
-                      group, out1, out2  (all per-trace)
+                      b_preload_write, b_core_start, group, out1, out2
+                      (all per-trace)
     metadata.json     experiment + scope settings + device serials
 """
 
@@ -200,6 +201,22 @@ def write_inputs(target, a, b, k, mode, mode2):
     write_u8(target, REG_CTRL, (mode & 1) | ((mode2 & 1) << 1))
 
 
+def write_experiment_control(
+    target, mode, mode2, use_b_preload, force_core_b_zero,
+    trigger_delay_cycles, route_b_write_to_preload=False,
+):
+    ctrl = (
+        (mode & 1) |
+        ((mode2 & 1) << 1) |
+        ((1 if use_b_preload else 0) << 2) |
+        ((1 if force_core_b_zero else 0) << 3) |
+        ((1 if route_b_write_to_preload else 0) << 4) |
+        ((int(trigger_delay_cycles) & 0x07) << 5)
+    )
+    write_u8(target, REG_CTRL, ctrl)
+    return ctrl
+
+
 def b_write_plan(b_values, b_load_policy, b_scrub_mod_q):
     """Return (first REG_B write, value present at start) arrays.
 
@@ -220,6 +237,23 @@ def b_write_plan(b_values, b_load_policy, b_scrub_mod_q):
         return first, effective
 
     raise ValueError(f"unknown b_load_policy={b_load_policy!r}")
+
+
+def b_preload_plan(b_values, b_preload_policy):
+    b_values = np.asarray(b_values, dtype=np.uint32)
+    if b_preload_policy == "none":
+        return np.zeros(b_values.shape, dtype=np.uint32)
+    if b_preload_policy == "logical":
+        return b_values.copy()
+    raise ValueError(f"unknown b_preload_policy={b_preload_policy!r}")
+
+
+def b_core_start_plan(b_effective_start, b_preload_write, use_b_preload, force_core_b_zero):
+    if force_core_b_zero:
+        return np.zeros(np.asarray(b_effective_start).shape, dtype=np.uint32)
+    if use_b_preload:
+        return np.asarray(b_preload_write, dtype=np.uint32).copy()
+    return np.asarray(b_effective_start, dtype=np.uint32).copy()
 
 
 # ----------------------------------------------------------------------------
@@ -425,6 +459,10 @@ def capture_loop(
     k_max=256,
     b_load_policy="normal",
     b_scrub_mod_q=None,
+    b_preload_policy="none",
+    use_b_preload=False,
+    force_core_b_zero=False,
+    trigger_delay_cycles=0,
     pre_arm_delay_ms=0.0,
     poll_interval=0.0005, poll_timeout=0.5,
 ):
@@ -452,6 +490,10 @@ def capture_loop(
     b_first_write, b_effective_start = b_write_plan(
         b_values, b_load_policy, b_scrub_mod_q
     )
+    b_preload_write = b_preload_plan(b_values, b_preload_policy)
+    b_core_start = b_core_start_plan(
+        b_effective_start, b_preload_write, use_b_preload, force_core_b_zero
+    )
 
     traces   = np.empty((n_traces, samples), dtype=np.float32)
     out1_arr = np.empty(n_traces, dtype=np.uint32)
@@ -463,6 +505,12 @@ def capture_loop(
                 "trigger-mode=host-toggle requires target.usb_trigger_toggle(). "
                 "Update chipwhisperer or use --trigger-mode internal."
             )
+
+    exp_ctrl = write_experiment_control(
+        target, mode, mode2,
+        use_b_preload, force_core_b_zero, trigger_delay_cycles,
+        route_b_write_to_preload=False,
+    )
 
     if vary == "b":
         secret_summary = (f"vary=b  group A=fixed b={hex(b_fixed % q)}, "
@@ -480,21 +528,45 @@ def capture_loop(
     print(f"[capture] starting {n_traces} traces, {samples} samples each "
           f"(trigger={trigger_mode}, {secret_summary})")
     print(f"[capture] b_load_policy={b_load_policy}: {load_summary}")
+    print(f"[capture] preload_policy={b_preload_policy}, "
+          f"use_b_preload={use_b_preload}, force_core_b_zero={force_core_b_zero}, "
+          f"trigger_delay_cycles={trigger_delay_cycles}, exp_ctrl=0x{exp_ctrl:02x}")
     t0 = time.time()
     fail_count = 0
 
     for i in range(n_traces):
         b_first = int(b_first_write[i])
         b_effective = int(b_effective_start[i])
+        b_preload = int(b_preload_write[i])
         k_val = int(k_values[i])
+
+        if b_preload_policy != "none":
+            write_experiment_control(
+                target, mode, mode2,
+                use_b_preload, force_core_b_zero, trigger_delay_cycles,
+                route_b_write_to_preload=True,
+            )
+            write_u32(target, REG_B, b_preload)
+            write_experiment_control(
+                target, mode, mode2,
+                use_b_preload, force_core_b_zero, trigger_delay_cycles,
+                route_b_write_to_preload=False,
+            )
+
         write_inputs(target, a, b_first, k_val, mode, mode2)
 
         # F11 diagnostic path: preserve the fixed-vs-random group labels and
         # the initial REG_B write, but make the last REG_B write before arm
         # fixed. If the TVLA peak disappears, the previous peak was dominated
         # by the input/write path state rather than the arithmetic core.
-        if b_load_policy == "random-then-scrub":
+        if b_load_policy in ("constant", "random-then-scrub"):
             write_u32(target, REG_B, b_effective)
+
+        write_experiment_control(
+            target, mode, mode2,
+            use_b_preload, force_core_b_zero, trigger_delay_cycles,
+            route_b_write_to_preload=False,
+        )
 
         if pre_arm_delay_ms > 0:
             time.sleep(pre_arm_delay_ms / 1000.0)
@@ -504,8 +576,9 @@ def capture_loop(
         if trigger_mode == "host-toggle":
             target.usb_trigger_toggle()
 
-        # In 'internal' mode, this register write is the trigger event itself:
-        # the wrapper raises busy_reg -> tio_trigger on the same FPGA cycle.
+        # In 'internal' mode, this register write schedules the trigger event:
+        # the wrapper raises trigger_reg -> tio_trigger after the configured
+        # trigger delay.
         write_u8(target, REG_STATUS, 0x01)
 
         t_wait = time.time()
@@ -546,7 +619,7 @@ def capture_loop(
     print(f"[capture] done. total_fail={fail_count}")
     return (
         traces, b_values, groups, out1_arr, out2_arr, k_values,
-        b_first_write, b_effective_start,
+        b_first_write, b_effective_start, b_preload_write, b_core_start,
     )
 
 
@@ -587,7 +660,7 @@ def main():
                    help="Scope kind. 'auto' detects from cw.list_devices() name field")
     p.add_argument("--trigger-mode", default="internal",
                    choices=["internal", "host-toggle"],
-                   help="'internal' = wrapper drives tio_trigger from busy_reg "
+                   help="'internal' = wrapper drives tio_trigger from trigger_reg "
                         "(re-synthesis required, recommended). "
                         "'host-toggle' = legacy bitstream where tio_trigger=usb_trigger.")
     p.add_argument("--num-traces", type=int, default=2000)
@@ -641,12 +714,32 @@ def main():
                    help="Diagnostic delay after the final input/scrub write and "
                         "before scope.arm(). Use 0 for F11; fixed delays are not "
                         "a security countermeasure.")
+    p.add_argument("--b-preload-policy", choices=["none", "logical"], default="none",
+                   help="'logical' writes the logical TVLA b value to REG_B_PRELOAD "
+                        "before the REG_B scrub path. Used for Exp G preload/scrub "
+                        "core-input experiments.")
+    p.add_argument("--use-b-preload", action="store_true",
+                   help="Start the core from REG_B_PRELOAD instead of REG_B. "
+                        "Requires a bitstream with the preload wrapper registers.")
+    p.add_argument("--force-core-b-zero", action="store_true",
+                   help="Debug negative control: on start, force b_core=0 even if "
+                        "--use-b-preload is set.")
+    p.add_argument("--trigger-delay-cycles", type=int, default=0,
+                   help="Delay the internal trigger this many target cycles after "
+                        "the start write/input load. Used to align samples to "
+                        "later core stages for isolation checks.")
     args = p.parse_args()
 
     bitpath = Path(args.bitfile).expanduser().resolve()
     if not bitpath.exists():
         print(f"ERROR: bitfile not found: {bitpath}", file=sys.stderr)
         return 2
+    if not (0 <= args.trigger_delay_cycles <= 7):
+        print("ERROR: --trigger-delay-cycles must be in [0, 7]", file=sys.stderr)
+        return 2
+    if args.use_b_preload and args.b_preload_policy == "none":
+        print("[inputs] WARNING: --use-b-preload is set but --b-preload-policy=none; "
+              "b_preload will be 0 for every trace.")
 
     q = KYBER_Q if args.mode2 == 0 else DILITHIUM_Q
     a_raw = args.a & 0xFFFFFFFF
@@ -689,7 +782,10 @@ def main():
         target = cw.target(scope, cw.targets.CW305, **target_kwargs)
     else:
         print(f"[target] programming bitfile: {bitpath}")
-        target = cw.target(scope, cw.targets.CW305, bsfile=str(bitpath), **target_kwargs)
+        target = cw.target(
+            scope, cw.targets.CW305,
+            bsfile=str(bitpath), force=True, **target_kwargs,
+        )
 
     fpga_id = read_u8(target, REG_ID)
     print(f"[target] ID register = 0x{fpga_id:02x} (expect 0xc4)")
@@ -713,7 +809,7 @@ def main():
     try:
         (
             traces, b_arr, groups, out1_arr, out2_arr, k_arr,
-            b_first_arr, b_effective_arr,
+            b_first_arr, b_effective_arr, b_preload_arr, b_core_start_arr,
         ) = capture_loop(
             scope, target,
             n_traces=args.num_traces, samples=capture_samples,
@@ -724,6 +820,10 @@ def main():
             vary=args.vary, k_max=args.k_max,
             b_load_policy=args.b_load_policy,
             b_scrub_mod_q=b_scrub_mod_q,
+            b_preload_policy=args.b_preload_policy,
+            use_b_preload=args.use_b_preload,
+            force_core_b_zero=args.force_core_b_zero,
+            trigger_delay_cycles=args.trigger_delay_cycles,
             pre_arm_delay_ms=args.pre_arm_delay_ms,
         )
     finally:
@@ -744,6 +844,8 @@ def main():
         b=b_arr,
         b_first_write=b_first_arr,
         b_effective_start=b_effective_arr,
+        b_preload_write=b_preload_arr,
+        b_core_start=b_core_start_arr,
         k=k_arr,
         mode=np.full(args.num_traces, args.mode, dtype=np.uint8),
         mode2=np.full(args.num_traces, args.mode2, dtype=np.uint8),
@@ -782,10 +884,16 @@ def main():
             "b_load_policy":       args.b_load_policy,
             "b_scrub_value":       f"0x{b_scrub_raw & 0xFFFFFFFF:08x}",
             "b_scrub_mod_q":       b_scrub_mod_q,
+            "b_preload_policy":    args.b_preload_policy,
+            "use_b_preload":       bool(args.use_b_preload),
+            "force_core_b_zero":   bool(args.force_core_b_zero),
+            "trigger_delay_cycles": int(args.trigger_delay_cycles),
             "pre_arm_delay_ms":    float(args.pre_arm_delay_ms),
             "b_field_note":        "inputs['b'] is the logical TVLA grouping value; "
                                    "inputs['b_effective_start'] is the value present "
-                                   "in REG_B when start is asserted.",
+                                   "in REG_B when start is asserted; "
+                                   "inputs['b_core_start'] is the value selected "
+                                   "for b_core by the wrapper.",
         },
         "seed":         args.seed,
         "bitfile":      str(bitpath),

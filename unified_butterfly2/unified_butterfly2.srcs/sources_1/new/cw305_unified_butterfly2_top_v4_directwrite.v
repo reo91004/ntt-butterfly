@@ -11,11 +11,18 @@
  *   0x00 : A[31:0]     write/read 4 bytes, little-endian
  *   0x01 : B[31:0]     write/read 4 bytes, little-endian
  *   0x02 : K[9:0]      write/read 2 bytes, little-endian
- *   0x03 : CTRL        write/read 1 byte, bit0=mode, bit1=mode2
+ *   0x03 : CTRL        write/read 1 byte:
+ *                         bit0=mode,
+ *                         bit1=mode2,
+ *                         bit2=use_b_preload_on_start,
+ *                         bit3=force_core_b_zero,
+ *                         bit4=route_REG_B_writes_to_B_PRELOAD,
+ *                         bit[7:5]=TRIG_DELAY cycles from start/load to trigger
  *   0x04 : CMD/STATUS  write bit0=start, bit1=clear_done
  *                       read bit0=done, bit1=busy
  *   0x05 : OUT1[31:0]  read 4 bytes, little-endian
  *   0x06 : OUT2[31:0]  read 4 bytes, little-endian
+ *   0x07 : B_PRELOAD[31:0] readback, little-endian
  *   0x70 : debug direct_write_count
  *   0x71 : debug last_write_addr
  *   0x72 : debug last_write_bytecnt
@@ -108,9 +115,11 @@ module cw305_unified_butterfly2_top_v4 #(
 
     reg [31:0] a_shadow     = 32'd0;
     reg [31:0] b_shadow     = 32'd0;
+    reg [31:0] b_preload    = 32'd0;
     reg [9:0]  k_shadow     = 10'd0;
     reg        mode_shadow  = 1'b1;
     reg        mode2_shadow = 1'b0;
+    reg [2:0]  trigger_delay_shadow = 3'd0;
 
     reg [31:0] a_core       = 32'd0;
     reg [31:0] b_core       = 32'd0;
@@ -123,6 +132,8 @@ module cw305_unified_butterfly2_top_v4 #(
     reg        busy_reg     = 1'b0;
     reg        done_reg     = 1'b0;
     reg [7:0]  wait_count   = 8'd0;
+    reg [7:0]  trigger_delay_count = 8'd0;
+    reg        trigger_reg  = 1'b0;
     // The butterfly core itself is 7 cycles. From the wrapper start write,
     // out1_wire/out2_wire are valid after about 8 usb_clk cycles because the
     // top-level ROM/input register adds one alignment cycle.
@@ -143,6 +154,12 @@ module cw305_unified_butterfly2_top_v4 #(
 
     wire [31:0] out1_wire;
     wire [31:0] out2_wire;
+    reg         use_b_preload_on_start = 1'b0;
+    reg         force_core_b_zero      = 1'b0;
+    reg         route_b_write_to_preload = 1'b0;
+    wire [31:0] b_start_value =
+        force_core_b_zero ? 32'd0 :
+        (use_b_preload_on_start ? b_preload : b_shadow);
 
     unified_butterfly2_top U_butterfly (
         .clk   (usb_clk_buf),
@@ -163,12 +180,22 @@ module cw305_unified_butterfly2_top_v4 #(
 
         if (busy_reg) begin
             wait_count <= wait_count + 8'd1;
+            if (!trigger_reg) begin
+                if (trigger_delay_count <= 8'd1) begin
+                    trigger_reg <= 1'b1;
+                    trigger_delay_count <= 8'd0;
+                end else begin
+                    trigger_delay_count <= trigger_delay_count - 8'd1;
+                end
+            end
             if (wait_count == CAPTURE_DELAY) begin
                 out1_reg   <= out1_wire;
                 out2_reg   <= out2_wire;
                 busy_reg   <= 1'b0;
                 done_reg   <= 1'b1;
                 wait_count <= 8'd0;
+                trigger_delay_count <= 8'd0;
+                trigger_reg <= 1'b0;
             end
         end
 
@@ -190,10 +217,30 @@ module cw305_unified_butterfly2_top_v4 #(
 
                 8'h01: begin
                     case (direct_wr_byte[1:0])
-                        2'd0: b_shadow[7:0]   <= direct_wr_data;
-                        2'd1: b_shadow[15:8]  <= direct_wr_data;
-                        2'd2: b_shadow[23:16] <= direct_wr_data;
-                        2'd3: b_shadow[31:24] <= direct_wr_data;
+                        2'd0: begin
+                            if (route_b_write_to_preload)
+                                b_preload[7:0] <= direct_wr_data;
+                            else
+                                b_shadow[7:0] <= direct_wr_data;
+                        end
+                        2'd1: begin
+                            if (route_b_write_to_preload)
+                                b_preload[15:8] <= direct_wr_data;
+                            else
+                                b_shadow[15:8] <= direct_wr_data;
+                        end
+                        2'd2: begin
+                            if (route_b_write_to_preload)
+                                b_preload[23:16] <= direct_wr_data;
+                            else
+                                b_shadow[23:16] <= direct_wr_data;
+                        end
+                        2'd3: begin
+                            if (route_b_write_to_preload)
+                                b_preload[31:24] <= direct_wr_data;
+                            else
+                                b_shadow[31:24] <= direct_wr_data;
+                        end
                     endcase
                 end
 
@@ -206,8 +253,12 @@ module cw305_unified_butterfly2_top_v4 #(
 
                 8'h03: begin
                     if (direct_wr_byte == 7'd0) begin
-                        mode_shadow  <= direct_wr_data[0];
-                        mode2_shadow <= direct_wr_data[1];
+                        mode_shadow              <= direct_wr_data[0];
+                        mode2_shadow             <= direct_wr_data[1];
+                        use_b_preload_on_start   <= direct_wr_data[2];
+                        force_core_b_zero        <= direct_wr_data[3];
+                        route_b_write_to_preload <= direct_wr_data[4];
+                        trigger_delay_shadow     <= direct_wr_data[7:5];
                     end
                 end
 
@@ -217,16 +268,19 @@ module cw305_unified_butterfly2_top_v4 #(
                             done_reg <= 1'b0;
                         if (direct_wr_data[0] && !busy_reg) begin
                             a_core     <= a_shadow;
-                            b_core     <= b_shadow;
+                            b_core     <= b_start_value;
                             k_core     <= k_shadow;
                             mode_core  <= mode_shadow;
                             mode2_core <= mode2_shadow;
                             busy_reg   <= 1'b1;
                             done_reg   <= 1'b0;
                             wait_count <= 8'd0;
+                            trigger_delay_count <= trigger_delay_shadow;
+                            trigger_reg <= (trigger_delay_shadow == 8'd0);
                         end
                     end
                 end
+
             endcase
         end
     end
@@ -241,7 +295,12 @@ module cw305_unified_butterfly2_top_v4 #(
                                        (reg_bytecnt[1:0] == 2'd2) ? b_shadow[23:16] :
                                                                     b_shadow[31:24]) :
         (reg_address[7:0] == 8'h02) ? ((reg_bytecnt[0] == 1'b0) ? k_shadow[7:0] : {6'b0, k_shadow[9:8]}) :
-        (reg_address[7:0] == 8'h03) ? {6'b0, mode2_shadow, mode_shadow} :
+        (reg_address[7:0] == 8'h03) ? {trigger_delay_shadow,
+                                       route_b_write_to_preload,
+                                       force_core_b_zero,
+                                       use_b_preload_on_start,
+                                       mode2_shadow,
+                                       mode_shadow} :
         (reg_address[7:0] == 8'h04) ? {6'b0, busy_reg, done_reg} :
         (reg_address[7:0] == 8'h05) ? ((reg_bytecnt[1:0] == 2'd0) ? out1_reg[7:0]   :
                                        (reg_bytecnt[1:0] == 2'd1) ? out1_reg[15:8]  :
@@ -251,6 +310,10 @@ module cw305_unified_butterfly2_top_v4 #(
                                        (reg_bytecnt[1:0] == 2'd1) ? out2_reg[15:8]  :
                                        (reg_bytecnt[1:0] == 2'd2) ? out2_reg[23:16] :
                                                                     out2_reg[31:24]) :
+        (reg_address[7:0] == 8'h07) ? ((reg_bytecnt[1:0] == 2'd0) ? b_preload[7:0]   :
+                                       (reg_bytecnt[1:0] == 2'd1) ? b_preload[15:8]  :
+                                       (reg_bytecnt[1:0] == 2'd2) ? b_preload[23:16] :
+                                                                    b_preload[31:24]) :
         (reg_address[7:0] == 8'h70) ? direct_write_count :
         (reg_address[7:0] == 8'h71) ? last_write_addr :
         (reg_address[7:0] == 8'h72) ? {1'b0, last_write_byte} :
@@ -266,7 +329,7 @@ module cw305_unified_butterfly2_top_v4 #(
 
     // Default SCA build: trigger is asserted while a butterfly evaluation is
     // in flight. Set pUSE_INTERNAL_TRIGGER=0 only for legacy host-toggle tests.
-    assign tio_trigger = pUSE_INTERNAL_TRIGGER ? busy_reg : usb_trigger;
+    assign tio_trigger = pUSE_INTERNAL_TRIGGER ? trigger_reg : usb_trigger;
     assign tio_clkout  = usb_clk_buf;
 
 endmodule

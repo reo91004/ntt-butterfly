@@ -14,6 +14,7 @@ REG_CTRL        = 0x03
 REG_STATUS      = 0x04
 REG_OUT1        = 0x05
 REG_OUT2        = 0x06
+REG_B_PRELOAD   = 0x07  # readback only; writes are routed through REG_B by REG_CTRL bit4
 REG_WRCOUNT     = 0x70
 REG_LAST_ADDR   = 0x71
 REG_LAST_BYTE   = 0x72

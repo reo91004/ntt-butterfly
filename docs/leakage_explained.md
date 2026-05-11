@@ -53,10 +53,12 @@ Verilog / Vivado / FPGA 부채널 분석을 처음 들어보는 독자를 가정
   - **누설은 확실히 있다**. canonical 입력 (`a, b < q`) 조건에서도 TVLA
     peak |t| 가 88-98로, NIST PQC 평가 표준 임계값 4.5를 압도. butterfly
     파이프라인의 첫 몇 cycle 안에서 즉시 검출.
-  - **다만 현재 dominant peak의 위치 해석은 수정됨**. A-E만 보면 peak가
-    S7/post-result window와 겹쳐 core output 누설처럼 보이지만, Exp F의 isolation
-    실험에서 core/S7를 끊어도 peak가 남고 arm 직전 fixed B scrub 시 peak가 사라졌다.
-    지금 capture protocol의 강한 peak는 `REG_B` write/input path 상태가 지배한다.
+  - **위치 해석은 두 단계로 수정됨**. A-E만 보면 peak가 S7/post-result window와
+    겹쳐 core output 누설처럼 보인다. Exp F는 normal capture의 강한 peak에
+    `REG_B` write/input path 상태가 크게 섞인다는 것을 보였다. Exp G는 그 path를
+    fixed로 scrub해도 내부 preload로 `b_core`가 바뀌면 다시 `|t|=29.8-33.7` peak가
+    남는다는 것을 보였다. 즉 write path artifact만이 아니라 core/Montgomery/S7 이후
+    값 의존 누설도 실제로 존재한다.
   - **CT/GS 모두 같은 위치에서 누설**. mode mux가 별도의 신규 cluster를 만들지는
     않음. 다만 단일 알고리즘 분리 구현과 직접 비교한 baseline은 아직 없음.
   - **Dilithium 이 더 강하게 누설**. operand bit 폭이 12-bit 에서 23-bit 로
@@ -192,7 +194,7 @@ CW305 보드는 **FPGA 코어 전원선에 0.1Ω shunt 저항** 을 박아놓고
 - **연결 (3 라인)**:
   - SMA (ADC 입력): CW305 의 코어 전원 측정 출력.
   - tio_clkin / tio_clkout: scope 의 PLL 입력 ← FPGA 의 96 MHz 클럭.
-  - tio_trigger / tio4: scope 의 trigger 입력 ← FPGA 의 busy_reg 신호.
+  - tio_trigger / tio4: scope 의 trigger 입력 ← FPGA 의 trigger_reg 신호.
 
 ### 3.2 클럭과 ADC 비율
 
@@ -209,10 +211,10 @@ CW305 보드는 **FPGA 코어 전원선에 0.1Ω shunt 저항** 을 박아놓고
 trigger 가 들쭉날쭉하면 매 trace 의 sample 0 이 다른 cycle 에 떨어져서 평균을
 내도 신호가 흐려짐. 두 옵션:
 
-- **internal (default)**: wrapper 가 `tio_trigger = busy_reg` 직결.
-  ([rtl/cw305_unified_butterfly2_top_v4_directwrite.v:259-263](../rtl/cw305_unified_butterfly2_top_v4_directwrite.v))
-  butterfly 시작과 *같은 cycle* 에 trigger 가 올라감 → sub-cycle 정렬. 이걸
-  쓰려면 wrapper 를 다시 합성해야 함.
+- **internal (default)**: wrapper 가 `tio_trigger = trigger_reg` 로 구동.
+  ([rtl/cw305_unified_butterfly2_top_v4_directwrite.v](../rtl/cw305_unified_butterfly2_top_v4_directwrite.v))
+  default trigger delay 0에서는 butterfly 시작과 *같은 cycle* 에 trigger 가
+  올라감 → sub-cycle 정렬. 이걸 쓰려면 wrapper 를 다시 합성해야 함.
 - **host-toggle (legacy)**: 옛 wrapper 처럼 USB로 호스트가 `usb_trigger_toggle()`
   로 흔듦. USB 트랜잭션 지연 (~125 us) 이 trigger 시점에 들어가 sample window 가
   훨씬 넓어야 함.
@@ -305,20 +307,22 @@ USB register 인터페이스. butterfly core 자체는 USB와 무관하지만, �
 | 0x00 | A | a 입력 (4 byte LE) |
 | 0x01 | B | b 입력 (4 byte LE) |
 | 0x02 | K | zeta 인덱스 (2 byte) |
-| 0x03 | CTRL | bit0=mode, bit1=mode2 |
+| 0x03 | CTRL | bit0=mode, bit1=mode2, bit2=use preload, bit3=force b_core=0, bit4=route B write to preload, bit[7:5]=trigger delay |
 | 0x04 | STATUS | write bit0=start / bit1=clear_done; read bit0=done / bit1=busy |
 | 0x05 | OUT1 | 결과 1 (4 byte LE) |
 | 0x06 | OUT2 | 결과 2 (4 byte LE) |
+| 0x07 | B_PRELOAD | preload readback (4 byte LE) |
 | 0x7E | ID | 0xC4 (sanity check) |
 
-호스트가 입력 4개를 쓰고 0x04 에 `0x01` 을 쓰면 `busy_reg = 1` 이 되어 trigger
-가 올라가고 butterfly core 가 시작. core 자체는 7-cycle pipeline이고, wrapper
-start 기준으로 `out1_wire/out2_wire` 는 약 8 cycle 뒤 valid가 된다. 현재 wrapper는
+호스트가 입력 4개를 쓰고 0x04 에 `0x01` 을 쓰면 `busy_reg = 1` 이 되고
+butterfly core 가 시작. `trigger_reg`는 `CTRL[7:5]` delay 뒤에 올라가며, default
+delay 0에서는 start와 같은 cycle에 올라간다. core 자체는 7-cycle pipeline이고,
+wrapper start 기준으로 `out1_wire/out2_wire` 는 약 8 cycle 뒤 valid가 된다. 현재 wrapper는
 `CAPTURE_DELAY=72` 동안 trigger를 더 유지한 뒤 `busy_reg = 0` 으로 떨어뜨리며
 readback용 `out1_reg / out2_reg` 에 결과를 latch한다. 즉 72 cycle은 butterfly
 latency가 아니라 post-result capture/readback hold window다.
 
-`assign tio_trigger = busy_reg` 로 trigger 가 sub-cycle 정확.
+`assign tio_trigger = trigger_reg` 로 trigger 가 sub-cycle 정확.
 
 ---
 
@@ -336,7 +340,7 @@ latency가 아니라 post-result capture/readback hold window다.
      - `--vary b` (TVLA용): b 가 50% 고정 / 50% 랜덤 [0, q).
      - `--vary k` (CPA용): k 가 균등 [0, k_max), b 고정.
    - USB로 register 0x00~0x03 에 입력 쓰기.
-   - scope 무장 (`scope.arm()`) → 0x04 에 `0x01` 쓰기 → busy_reg 가 trigger 상승.
+   - scope 무장 (`scope.arm()`) → 0x04 에 `0x01` 쓰기 → trigger_reg 가 trigger 상승.
    - done 비트 폴링 → `out1/out2` 읽기.
    - scope 에서 ADC trace 회수.
 5. `traces.npy`, `inputs.npz`, `metadata.json` 저장.
@@ -395,7 +399,7 @@ trigger 상승부터 sample 별로 무엇이 register 에 들어가는지 매핑
 
 ```
 ADC 클럭 = 192 MHz, FPGA 클럭 = 96 MHz → 1 FPGA cycle = 2 ADC sample.
-trigger ↑ at sample 0 (= busy_reg 상승 cycle).
+trigger ↑ at sample 0 (= trigger_reg 상승 cycle).
 ```
 
 | Cycle | ADC sample | 무슨 일이 벌어지나 | 새로 갱신되는 register |
@@ -414,19 +418,21 @@ trigger ↑ at sample 0 (= busy_reg 상승 cycle).
 | C74 근처 | ~146 | wait_count == CAPTURE_DELAY, readback latch, busy_reg=0, done_reg=1, trigger 하강 | out1_reg, out2_reg, busy_reg, done_reg |
 
 주의: 이 표는 sample이 어떤 core cycle과 겹치는지 보여준다. Exp F 이후에는
-sample 위치만으로 누설원을 확정하지 않는다. 현재 capture loop에서는 `REG_B` write
+sample 위치만으로 누설원을 확정하지 않는다. normal capture에서는 `REG_B` write
 직후 scope를 arm하므로, 마지막 B write/input path 상태가 core cycle window에 겹쳐
-보일 수 있다.
+보일 수 있다. Exp G처럼 preload/scrub으로 `REG_B` start 값을 고정해야 core-only
+해석이 가능하다.
 
 ---
 
 ## 7. 누설점 — 어느 register, 어느 sample
 
-### 최신 결론: 현재 dominant peak는 `REG_B` write/input path
+### 최신 결론: write path도 새고, core-only도 샌다
 
-2026-05-11에 수행한 [Exp F](experiments/exp_F_input_write_isolation.md)가 이 장의
-초기 해석을 갱신한다. A-E의 TVLA fail 자체는 유효하지만, sample 위치만 보고
-S7/final output register를 주 누설점으로 단정하면 안 된다.
+2026-05-11에 수행한 [Exp F](experiments/exp_F_input_write_isolation.md)와
+[Exp G](experiments/exp_G_core_preload_isolation.md)가 이 장의 초기 해석을 갱신한다.
+A-E의 TVLA fail 자체는 유효하지만, sample 위치만 보고 S7/final output register를
+주 누설점으로 단정하면 안 된다.
 
 | 실험 | 분리한 것 | peak |
 |---|---|---:|
@@ -436,11 +442,14 @@ S7/final output register를 주 누설점으로 단정하면 안 된다.
 | core `.b=0`, `b_core=0` | multiplier/MR/S7에서 secret 제거 | `|t|=33.77 @ s20` |
 | 실제 FPGA B write constant | group label은 유지, `REG_B` write 값만 fixed | `|t|=3.27`, no leakage |
 | random B 후 fixed B scrub | random write 뒤 arm 직전 fixed로 덮어쓰기 | `|t|=2.63`, no leakage |
+| preload core-only | `REG_B` start fixed, 내부 `b_preload`/`b_core`만 fixed/random | `|t|=29.79 @ s23`, leakage |
+| preload core-only, trigger delay 2 | 같은 조건, trigger만 2 cycle 뒤로 이동 | `|t|=33.66 @ s16`, leakage |
+| preload traffic + force `b_core=0` | `b_preload`는 fixed/random, core 입력은 constant | `|t|=3.41`, no leakage |
 
-따라서 현재 capture protocol에서 보이는 강한 sample 20대 peak는 arithmetic core의
-final result보다 **마지막 `REG_B` write/input path 상태**가 지배한다. 진짜 core-only
-누설을 보려면 secret을 별도 preload한 뒤, scope arm 직전 외부 `REG_B`/USB write path를
-fixed 또는 dummy 값으로 scrub하고 start만 걸어야 한다.
+따라서 normal capture protocol에서 보이는 강한 sample 20대 peak에는 **마지막
+`REG_B` write/input path 상태**가 크게 섞인다. 하지만 그 path를 fixed로 scrub해도
+내부 `b_core`가 바뀌면 강한 TVLA가 남는다. 최신 결론은 **host write path만이 아니라
+butterfly core/Montgomery/S7 이후 값 의존 switching도 실제 누설원**이라는 것이다.
 
 A2 캡처 (Kyber CT, k=16, N=20000) 의 TVLA 결과:
 
@@ -454,16 +463,19 @@ sample 51:  |t| = 62.64
 임계 통과 sample: 65 / 800
 ```
 
-두 cluster 는 A-E에서 반복 관측됐다. 다만 Exp F 이후에는 아래 설명을 "초기 위치 기반
-가설"로 읽어야 하며, core 누설로 확정하지 않는다.
+두 cluster 는 A-E에서 반복 관측됐다. Exp F/G 이후에는 아래 설명을 "위치 기반 후보"로
+읽어야 한다. normal capture에서는 write path 영향이 섞이고, preload/scrub 조건에서는
+core-only 누설이 같은 window에서 재현된다.
 
 ### Cluster 1 — sample 16~30 (양수 t)
 
 cycle C9~C15 영역과 시간상 겹친다. 초기 해석은 S7 register (out1, out2) 갱신 직후
 + 결과가 후속 register 들로 흘러가는 안정화 구간이라고 봤다. 하지만 Exp F에서
 core/S7를 secret-independent하게 만들어도 같은 peak가 유지됐고, arm 직전 fixed B scrub
-으로 사라졌다. 따라서 현재 capture protocol에서는 `REG_B` write/input path 상태가 만든
-신호로 보는 것이 더 정합하다.
+으로 사라졌다. 이어 Exp G에서 `REG_B` start 값을 fixed로 고정하고 내부 preload로만
+`b_core`를 바꿔도 peak가 다시 나타났다. 따라서 normal capture의 peak는 write path가
+지배할 수 있지만, core-only 조건에서는 `b*zeta`가 Montgomery 후반과 S7/post-result
+window로 전파된 값 의존 switching으로 보는 것이 가장 정합하다.
 
 양수 t 의 의미: "고정 b group 의 평균 전력 > 랜덤 b group 의 평균". 고정 b 값
 (0x12345678 % 3329 = 791) 이 만드는 mul_s2 = 791 · ζ 의 HW 가 랜덤 b 평균
@@ -498,7 +510,7 @@ bit 12~31: skip (Kyber q < 2^12, 사용 안 함)
 
 ## 8. 실험 6개의 논리 흐름
 
-`docs/experiments/` 의 A~F 가 여섯 개 질문에 차례로 답한다.
+`docs/experiments/` 의 A~G 가 일곱 개 질문에 차례로 답한다.
 
 | 실험 | 답하려는 질문 | 결과 |
 |---|---|---|
@@ -507,7 +519,8 @@ bit 12~31: skip (Kyber q < 2^12, 사용 안 함)
 | **C** | 알고리즘 (Kyber vs Dilithium) 차이는? | Dilithium 으로 같은 패턴 반복. peak |t| 더 크고 누설 sample 더 많음 (operand bit 폭 ↑) |
 | **D** | 어떤 bit 가 가장 강하게 누설? | bit-specific TVLA. 일부 bit 에 집중. 균등 HW 결론은 아니다 |
 | **E** | 누설로 secret 복구 가능한가? | naive HW CPA. canonical 조건에서 후보 공간 축소 실패 |
-| **F** | A-E의 peak가 정말 core/S7인가? | 아니다. core/S7를 끊어도 peak 유지, arm 직전 fixed B scrub 시 peak 소멸 → 현재 dominant peak는 `REG_B` write/input path |
+| **F** | A-E의 peak가 정말 core/S7만으로 설명되나? | 아니다. normal capture peak에는 `REG_B` write/input path가 크게 섞임 |
+| **G** | write path를 scrub하면 새 butterfly core는 안전한가? | 아니다. `REG_B` fixed, `b_core` fixed/random 조건에서도 `|t|=29.8-33.7` |
 
 각 실험은 이전 실험의 데이터/결론을 *전제로* 다음 질문을 넘긴다.
 
@@ -636,10 +649,12 @@ peak가 유지됐고, arm 직전 fixed B scrub으로 사라졌다. 따라서 sam
 4. **paired 캡처의 가치**. seed 가 같으면 b 시퀀스가 같음 → A vs B 비교가
    같은 입력을 두 회로 모드로 통과시킨 결과. 통계 검정력이 다름.
 
-5. **`mul_s2` 는 core-only 후보이지 현재 dominant peak의 확정 원인은 아님**.
+5. **`mul_s2`/Montgomery/S7 window는 core-only 누설 후보이자 현재 재현된 누설 window**.
    64 bit 에 b·ζ 그대로 들어가므로 정보론적으로는 위험한 register다. 그러나
-   Exp F에서 core `.b`를 constant로 끊어도 강한 peak가 유지됐다. core-only 누설은
-   preload/scrub wrapper로 다시 분리해야 한다.
+   Exp F에서 core `.b`를 constant로 끊어도 normal capture의 강한 peak가 유지됐기
+   때문에 sample 위치만으로는 확정할 수 없었다. Exp G의 preload/scrub 조건에서는
+   external `REG_B` start 값이 fixed인데도 `b_core`가 바뀌면 sample 20대 window에서
+   강한 TVLA가 재현됐다.
 
 6. **cluster 2 (sample 39~54) 는 새 butterfly stage 가 아니다**. 현재 wrapper는
    readback register (`out1_reg/out2_reg`) 를 CAPTURE_DELAY 시점에 latch하므로,
@@ -685,15 +700,15 @@ peak가 유지됐고, arm 직전 fixed B scrub으로 사라졌다. 따라서 sam
 
 ## 12. 다음 단계
 
-- **Preload/scrub wrapper**: secret `b`를 내부 preload register에 먼저 넣고, scope arm
-  직전에는 외부 `REG_B`/USB write path를 fixed 또는 dummy 값으로 scrub한 뒤 start만
-  거는 구조. 이 실험이 먼저 있어야 core-only leakage를 분리할 수 있다.
+- **Preload/scrub wrapper 유지**: core-only leakage는 이 구조에서 재현됐다. 이후 masking,
+  shuffling, dummy butterfly 같은 countermeasure 평가는 normal capture가 아니라 이
+  wrapper를 기준으로 해야 한다.
 - **Separate-impl baseline**: Kyber 단독 / Dilithium 단독 bitstream 을 별도
   합성해서 같은 input/seed 로 캡처. unified vs separate 의 |t| 차이를 직접
   비교하면 "통합이 만든 신규 누설" 을 정량화 가능. (Vivado 합성 작업 필요)
-- **Boolean masking 적용 후 재측정**: preload/scrub wrapper에서 core-only TVLA가
-  재현될 때 적용. secret 값을 random share `r` 로 분해해 multiplier 입력 두 register 에
-  분산 저장하고 |t| 가 얼마나 떨어지는지 비교.
+- **Boolean masking 적용 후 재측정**: core-only TVLA가 재현됐으므로 다음 구현 후보.
+  secret 값을 random share `r` 로 분해해 multiplier 입력 두 register 에 분산 저장하고
+  |t| 가 얼마나 떨어지는지 비교.
 - **Profiling/template attack**: training set 에서 leakage 모델을 추정한 뒤
   attack set 에 적용. naive HW CPA 가 실패한 canonical 조건에서도 더 정교한
   공격이 가능한지 확인.
@@ -708,14 +723,14 @@ peak가 유지됐고, arm 직전 fixed B scrub으로 사라졌다. 따라서 sam
 
 | 누설 지점 | 파일 | 라인 | 설명 |
 |---|---|---|---|
-| **REG_B write/input path** | `cw305_unified_butterfly2_top_v4_directwrite.v` + CW305 USB frontend | 0x01 write path | **Exp F 기준 현재 dominant peak** |
-| 입력 latch | `cw305_unified_butterfly2_top_v4_directwrite.v` | 150~221 | a_core, b_core, k_core 등. Exp F에서는 이 latch만으로 설명되지 않음 |
+| **REG_B write/input path** | `cw305_unified_butterfly2_top_v4_directwrite.v` + CW305 USB frontend | 0x01 write path | Exp F 기준 normal capture peak에 크게 섞임 |
+| 입력/preload latch | `cw305_unified_butterfly2_top_v4_directwrite.v` | wrapper start path | `b_core` 선택. force-zero control에서 preload 저장만으로는 TVLA 없음 |
 | ROM 조회 | `unified_butterfly2_top.v` | 36~41 | blk_mem_gen_0 instance |
 | S1 register | `unified_bufferfly2.v` | 39~50 | m1_s1, ref_zeta_s1 |
-| S2 register (mul_s2) | `unified_bufferfly2.v` | 53~62 | core-only 실험에서 다시 검증해야 할 후보 |
+| S2 register (mul_s2) | `unified_bufferfly2.v` | 53~62 | `b*zeta`가 처음 명시적으로 나타나는 core-only 후보 |
 | Mont 4 stages | `Modular_Reduction32.v` | 25~74 | Montgomery 감산기 4단 |
-| S7 register (out1, out2) | `unified_bufferfly2.v` | 117~120 | core-only 실험에서 다시 검증해야 할 후보. 현재 dominant peak의 필요조건은 아님 |
-| post-result fanout | `cw305_unified_butterfly2_top_v4_directwrite.v` + routing | S7 이후 | Exp F 전의 후보. preload/scrub 없이 확정 불가 |
+| S7 register (out1, out2) | `unified_bufferfly2.v` | 117~120 | Exp G peak window와 잘 맞는 후보 |
+| post-result fanout | `cw305_unified_butterfly2_top_v4_directwrite.v` + routing | S7 이후 | Exp G에서 core-only peak가 남는 window |
 
 ## 부록 B: 호스트 코드 의존성
 

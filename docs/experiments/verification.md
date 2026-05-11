@@ -83,11 +83,14 @@ canonical CPA rerun:
 | Exp C | 정합. Dilithium은 Kyber보다 더 넓게 누설 |
 | Exp D | 초기 결론 수정. random-only 분석에서 일부 bit만 임계 통과 |
 | Exp E | 초기 exploitability 결론 수정. canonical naive CPA는 실패 |
-| Exp F | localization 결론 수정. 현재 dominant peak는 core/S7가 아니라 `REG_B` write/input path |
+| Exp F | normal capture localization 결론 수정. 마지막 `REG_B` write/input path가 강한 peak를 지배할 수 있음 |
+| Exp G | preload/scrub으로 `REG_B` start 값을 fixed로 묶어도 `b_core`가 변하면 강한 TVLA peak 유지 |
 
 **전반적 결론**: unified butterfly2는 canonical 입력 조건에서도 강한 입력 의존 전력 누설을
-보이며 TVLA 기준으로 fail입니다. 다만 그 강한 peak를 곧바로 multiplier/MR/S7 누설로
-localize하면 안 됩니다. Exp F에서 core/S7를 끊어도 peak가 유지되고, arm 직전 fixed B
-scrub을 넣으면 peak가 사라졌으므로, 현재 capture protocol의 dominant peak는 `REG_B`
-write/input path가 지배합니다. core-only 누설과 공격 효율을 주장하려면 preload/scrub
-wrapper, profiling/template, 다중 중간값 기반 재실험이 필요합니다.
+보이며 TVLA 기준으로 fail입니다. 다만 A-E의 강한 peak를 sample 위치만 보고 곧바로
+multiplier/MR/S7 누설로 localize하면 안 된다는 Exp F의 경고는 여전히 유효합니다.
+normal capture에서는 마지막 `REG_B` write/input path가 peak를 크게 지배할 수 있습니다.
+그러나 Exp G에서 external `REG_B` start 값을 fixed로 scrub하고 내부 preload로만
+`b_core`를 바꿔도 강한 peak가 남았으므로, 최신 결론은 **butterfly core/Montgomery/S7
+이후 값 의존 누설도 실제로 존재한다**입니다. 공격 효율을 주장하려면 profiling/template,
+다중 중간값 기반 재실험이 필요합니다.
