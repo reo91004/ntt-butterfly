@@ -43,10 +43,12 @@ inverse, Dilithium forward, Dilithium inverse — selected by `mode`/`mode2`.
 
 ### 1.2 Side-channel platform
 
-The wrapper drives `tio_trigger = busy_reg`. So during each butterfly evaluation:
+The wrapper drives `tio_trigger = busy_reg`. So during each capture:
 - start register write → `busy_reg` rises on the same FPGA cycle
 - `tio_trigger` rises → CW scope (already armed) begins ADC capture
-- 72 cycles later (CAPTURE_DELAY) → `done_reg` rises, `busy_reg` falls → trigger drops
+- the 7-cycle core result becomes valid near the start of the trace
+- `CAPTURE_DELAY=72` keeps `busy_reg`/trigger high for a post-result window, then
+  latches readback outputs, raises `done_reg`, and drops the trigger
 - host reads outputs, clears `done`, moves on
 
 This gives **sub-cycle-accurate trace alignment** independent of USB latency.

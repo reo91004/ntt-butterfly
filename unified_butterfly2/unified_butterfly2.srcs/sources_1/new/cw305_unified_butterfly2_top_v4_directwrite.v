@@ -123,10 +123,17 @@ module cw305_unified_butterfly2_top_v4 #(
     reg        busy_reg     = 1'b0;
     reg        done_reg     = 1'b0;
     reg [7:0]  wait_count   = 8'd0;
-    // New pipelined butterfly core latency:
-    //   1 (top input reg / ROM) + 1 (S1) + 1 (S2 mul) + 64 (MR) + 1 (S67 out)
-    //   = 68 cycles. Set to 72 for margin.
-    localparam [7:0] CAPTURE_DELAY = 8'd72;
+    // The butterfly core itself is 7 cycles. From the wrapper start write,
+    // out1_wire/out2_wire are valid after about 8 usb_clk cycles because the
+    // top-level ROM/input register adds one alignment cycle.
+    //
+    // Keep busy/tio_trigger high longer than the arithmetic latency so captures
+    // include a stable post-result window. CAPTURE_DELAY is therefore a trigger
+    // hold/readback-latch delay, not the butterfly latency.
+    localparam [7:0] CORE_RESULT_VALID_DELAY = 8'd8;
+    localparam [7:0] POST_RESULT_TRIGGER_HOLD = 8'd64;
+    localparam [7:0] CAPTURE_DELAY =
+        CORE_RESULT_VALID_DELAY + POST_RESULT_TRIGGER_HOLD;
 
     reg [7:0] direct_write_count = 8'd0;
     reg [7:0] fe_write_count     = 8'd0;

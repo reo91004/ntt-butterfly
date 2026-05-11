@@ -533,9 +533,11 @@ def main():
                         "'host-toggle' = legacy bitstream where tio_trigger=usb_trigger.")
     p.add_argument("--num-traces", type=int, default=2000)
     p.add_argument("--samples", type=int, default=400,
-                   help="ADC samples per trace. With --trigger-mode internal, ~144 "
-                        "covers the 72-cycle butterfly at adc_mul=2. With host-toggle "
-                        "you need much wider (e.g. 50000) to absorb USB-latency gap.")
+                   help="ADC samples per trace. With --trigger-mode internal, the "
+                        "7-cycle core result appears near the start; use "
+                        "--sample-cycles for portable cycle-based windows. With "
+                        "host-toggle you need much wider (e.g. 50000) to absorb "
+                        "USB-latency gap.")
     p.add_argument("--sample-cycles", type=float, default=None,
                    help="Set capture length in target-clock cycles instead of raw ADC "
                         "samples. The script converts using the scope-specific ADC "

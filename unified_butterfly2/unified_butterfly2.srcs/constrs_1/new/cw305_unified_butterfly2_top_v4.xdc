@@ -140,7 +140,7 @@ set_false_path -to [get_ports tio_clkout]
 # Multicycle path: removed.
 #
 # The butterfly core (unified_butterfly2_core) is now fully pipelined:
-#   - 32-stage long-division Modular_Reduction32
+#   - 4-stage Montgomery Modular_Reduction32
 #   - registers around the 32x32 multiplier and the final add/sub
 # Every register-to-register path is single-cycle, so no multicycle relaxation
 # is needed.

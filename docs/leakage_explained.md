@@ -308,8 +308,11 @@ USB register 인터페이스. butterfly core 자체는 USB와 무관하지만, �
 | 0x7E | ID | 0xC4 (sanity check) |
 
 호스트가 입력 4개를 쓰고 0x04 에 `0x01` 을 쓰면 `busy_reg = 1` 이 되어 trigger
-가 올라가고 butterfly core 가 시작. 72 cycle 후 `busy_reg = 0` 으로 떨어지며
-결과가 `out1_reg / out2_reg` 에 latch.
+가 올라가고 butterfly core 가 시작. core 자체는 7-cycle pipeline이고, wrapper
+start 기준으로 `out1_wire/out2_wire` 는 약 8 cycle 뒤 valid가 된다. 현재 wrapper는
+`CAPTURE_DELAY=72` 동안 trigger를 더 유지한 뒤 `busy_reg = 0` 으로 떨어뜨리며
+readback용 `out1_reg / out2_reg` 에 결과를 latch한다. 즉 72 cycle은 butterfly
+latency가 아니라 post-result capture/readback hold window다.
 
 `assign tio_trigger = busy_reg` 로 trigger 가 sub-cycle 정확.
 
@@ -402,9 +405,9 @@ trigger ↑ at sample 0 (= busy_reg 상승 cycle).
 | C7 | 12~13 | Mont S3: 65-bit 덧셈, 상위 32 bit | t_s3, q_s3 |
 | C8 | 14~15 | Mont S4: 보정 → t_after_mr | r_s4 |
 | C9 | 16~17 | core S7: 최종 add/sub | **out1, out2 (32 bit)** |
-| C10+ | 18~30 | wait_count++ 진행, 결과가 register 들에 안정화 | (잔여 transition) |
-| C20+ | 39~54 | out1_reg/out2_reg 가 read_data mux 로 fanout | read_data 멀티플렉서 입력 |
-| C73 | ~146 | wait_count == 72, busy_reg=0, done_reg=1, trigger 하강 | busy_reg, done_reg |
+| C10+ | 18~30 | core output 안정화 / post-result window | (잔여 transition) |
+| C20+ | 39~54 | 새 산술 stage는 없음; 안정화된 core output의 routing/fanout 영향 후보 | core output fanout |
+| C74 근처 | ~146 | wait_count == CAPTURE_DELAY, readback latch, busy_reg=0, done_reg=1, trigger 하강 | out1_reg, out2_reg, busy_reg, done_reg |
 
 ★ **mul_s2 (cycle 4)** 와 **out1/out2 (cycle 9)** 가 비밀에 가장 강하게 의존
 하는 두 register.
@@ -523,7 +526,7 @@ sample 에서 유지되어야 함. 우리는 |t| 가 90 까지 나옴 → 거의
 ### 9.4 같은 sample 위치에서 누설 (5개 실험)
 
 A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
-= 21. 모두 sample 18~26 안. 같은 파이프라인 stage (C9~C13, S7 직후 안정화) 가
+= 21. 모두 sample 18~26 안. 같은 파이프라인 stage (C9 직후 post-result window) 가
 누설하는 거라 mode/algorithm 을 바꿔도 위치는 변하지 않음.
 
 ### 9.5 Bit 폭과 누설 강도의 비례
@@ -601,10 +604,11 @@ A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
    register 갱신보다 *여러 register 의 누설이 누적되는 구간* 이 훨씬 큰
    신호를 만들기 때문.
 
-6. **cluster 2 (sample 39~54) 는 butterfly 가 아니다**. 그건 wrapper 의
-   read_data mux 가 b 의존 결과 register 들 (out1/out2) 과 다른 register 들을
-   매 cycle 번갈아 선택하면서 만드는 누설. 같은 디자인이라도 wrapper 가 다른
-   read 경로를 쓰면 cluster 2 모양이 달라짐.
+6. **cluster 2 (sample 39~54) 는 새 butterfly stage 가 아니다**. 현재 wrapper는
+   readback register (`out1_reg/out2_reg`) 를 CAPTURE_DELAY 시점에 latch하므로,
+   sample 39~54를 새 결과의 readback-mux fanout이라고 단정할 수 없다. 더 보수적으로는
+   S7 이후 안정화된 core output/routing/fanout 이 post-result window 안에서 만드는
+   두 번째 cluster 로 해석한다.
 
 7. **mode mux 가 leak-clean 이라고 단정한 적 없음**. Exp B 는 "추가 cluster 가
    *관측되지 않음*" 을 보였을 뿐. 단일 알고리즘으로 분리 합성한 별도 bitstream
@@ -671,7 +675,7 @@ A2 peak sample = 21, B2 peak = 24, C1b peak = 24, C2b peak = 20, C-control peak
 | **S2 register (mul_s2)** | `unified_bufferfly2.v` | 53~62 | **64-bit 곱셈 결과 — 핵심 누설** |
 | Mont 4 stages | `Modular_Reduction32.v` | 25~74 | Montgomery 감산기 4단 |
 | **S7 register (out1, out2)** | `unified_bufferfly2.v` | 117~120 | **최종 결과 — 핵심 누설** |
-| read_data mux | `cw305_unified_butterfly2_top_v4_directwrite.v` | 226~253 | cluster 2 누설 원인 |
+| post-result fanout | `cw305_unified_butterfly2_top_v4_directwrite.v` + routing | S7 이후 | cluster 2의 보수적 해석 |
 
 ## 부록 B: 호스트 코드 의존성
 

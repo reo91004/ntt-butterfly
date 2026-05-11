@@ -214,7 +214,10 @@ def main():
         time.sleep(0.0002)
     print(f"  status sequence (first 10): {[f'0x{x:02x}' for x in seq[:10]]}")
     print(f"  busy seen: {seen_busy}    done seen: {seen_done}")
-    if not seen_busy:
+    if seen_done and not seen_busy:
+        print("  OK: done observed. busy_reg is a short hardware pulse and USB "
+              "status polling may miss it.")
+    elif not seen_busy:
         print("  WARNING: busy_reg never went high — start register write was not "
               "processed by the wrapper. Possible old/cached bitstream on the FPGA.")
     elif not seen_done:

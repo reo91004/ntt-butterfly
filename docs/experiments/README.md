@@ -67,7 +67,7 @@ CW-Lite/Pro로 재현할 때는 ADC MHz가 달라지므로 바로 아래 “재�
 | 타겟 클럭 | 96 MHz (CW305 usb_clk) | `scope.clock.freq_ctr` 측정값 |
 | ADC | 192 MHz (Husky `clkgen_freq=96e6 adc_mul=2`) | 타겟 cycle당 2 ADC sample |
 | Trigger | `internal` (busy_reg → tio_trigger → scope tio4) | sub-cycle 정렬 |
-| Sample window | 800 samples | butterfly 전체 + post-pipeline idle 포함 |
+| Sample window | 800 samples | core 결과 + post-result window 포함 |
 | RNG seed | 0xC0FFEE | A/B/C에서 동일 — paired 비교 가능 |
 | Host input normalization | `a`와 `b_fixed`를 q로 reduction 후 주입 | RTL의 butterfly 산술 전제 (`a,b < q`) 와 정합 |
 
@@ -87,11 +87,12 @@ trigger 상승. ADC가 타겟 클럭의 2배:
 | C7 | Mont S3: 65-bit 덧셈, 상위 32 | 12–13 |
 | C8 | Mont S4: final correction → t_after_mr | 14–15 |
 | C9 | **S7**: 최종 add/sub register out1/out2 | 16–17 |
-| C10+ | post-pipeline idle, busy_reg는 wait_count==72까지 유지 | 18+ |
+| C10+ | core output 안정화 / post-result window, busy_reg는 CAPTURE_DELAY까지 유지 | 18+ |
+| C74 근처 | wrapper가 out1_wire/out2_wire를 readback register로 latch, done=1, trigger 하강 | ~146 |
 
 → TVLA peak이 sample 18-30에 떨어진다는 것은 **S7 최종 출력 register 갱신 직후 ~
-busy idle 구간**에 누설이 집중된다는 뜻. cluster 39-54 (음수 t)는 출력값이
-read_mux로 fanout되며 register 안정화되는 영역.
+post-result window**에 누설이 집중된다는 뜻. cluster 39-54 (음수 t)는 새 산술
+stage가 아니라 core output이 안정화된 뒤의 routing/fanout/settling 영역으로 해석한다.
 
 주의: 위 sample 번호는 Husky/Husky-Plus `adc_mul=2` 기준입니다. CW-Lite/Pro
 `adc_mul=1` 재현에서는 같은 하드웨어 cycle이 대략 절반의 sample index에 나타납니다.
