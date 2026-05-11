@@ -52,6 +52,49 @@ Montgomery 후반/S7/post-result window와 겹쳤다. 그래서 처음에는 강
 모든 유효 trace는 rail saturation이 없었다. F3/F3b만 analog operating point가 깨져
 판정에서 제외했다.
 
+## F11 재현 명령
+
+현재 `host/capture_traces.py`에는 F11을 재현하기 위한 host-side load policy가 들어 있다.
+이 실험은 RTL을 바꾸지 않고, trace마다 다음 순서를 강제한다.
+
+1. TVLA group에 맞는 logical `b`를 `REG_B`에 먼저 쓴다.
+2. scope를 arm하기 직전 `REG_B`를 fixed scrub 값으로 다시 쓴다.
+3. start register를 써서 internal trigger를 발생시킨다.
+
+즉 `inputs.npz` 안에서 `b`는 TVLA group용 logical 값이고, `b_effective_start`가 실제
+start 시점에 core가 보게 되는 값이다. F11이 정합하려면 `b_first_write`는 fixed/random으로
+갈라지고, `b_effective_start`는 전 trace에서 하나의 fixed 값이어야 한다.
+
+```bash
+python3 host/capture_traces.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --label exp_F11_random_b_then_fixed_b_scrub_repro_N3k \
+    --num-traces 3000 \
+    --sample-cycles 120 \
+    --trigger-mode internal \
+    --mode 1 \
+    --mode2 0 \
+    --k 16 \
+    --seed 0xC0FFEE \
+    --b-fixed 0x12345678 \
+    --b-load-policy random-then-scrub \
+    --b-scrub-value 0x12345678
+
+python3 host/tvla.py host/results/<timestamp>_exp_F11_random_b_then_fixed_b_scrub_repro_N3k
+```
+
+### 2026-05-11 재현 결과
+
+같은 bitstream, 같은 seed, 같은 trace 수로 positive control과 F11을 연속 측정했다.
+
+| Run | Load policy | Result dir | TVLA 결과 | 입력 검산 |
+|---|---|---|---:|---|
+| positive control | `normal` | `20260511_175513_exp_F11_positive_control_normal_N3k` | `|t|=34.841 @ s21`, 43/240 samples fail | `b == b_first_write == b_effective_start`, output unique 1208 |
+| F11 repro | `random-then-scrub` | `20260511_175422_exp_F11_random_b_then_fixed_b_scrub_repro_N3k` | `|t|=2.957 @ s206`, 0/240 samples fail | `b == b_first_write`, `b_effective_start == 791` for all traces, output unique 1 |
+
+따라서 F11 no-leak 결과는 장비/분석 실패가 아니다. 동일 세팅에서 normal load는 즉시
+sample 21 peak를 재현하고, 마지막 `REG_B` write만 fixed scrub으로 바꾸면 peak가 사라진다.
+
 ## 핵심 판정
 
 ### 1. S7 correction 조건문은 주 원인이 아니다

@@ -20,13 +20,17 @@ Trigger handling has two modes (see --trigger-mode):
 Per trace:
   1. choose group (A=fixed-b, B=random-b)
   2. write inputs (a, b, k, ctrl) over USB
+     - with --b-load-policy random-then-scrub, b is first written with the
+       fixed/random TVLA value, then REG_B is overwritten with a fixed scrub
+       value immediately before arming the scope
   3. arm scope, write start, wait for done
   4. read trace from scope, read out1/out2 from target
   5. accumulate
 
 Stored under  results/<timestamp>_<label>/  :
     traces.npy        (N, samples) float32
-    inputs.npz        a, b, k, mode, mode2, group, out1, out2  (all per-trace)
+    inputs.npz        a, b, b_first_write, b_effective_start, k, mode, mode2,
+                      group, out1, out2  (all per-trace)
     metadata.json     experiment + scope settings + device serials
 """
 
@@ -194,6 +198,28 @@ def write_inputs(target, a, b, k, mode, mode2):
     write_u32(target, REG_B, b)
     target.fpga_write(REG_K, [k & 0xFF, (k >> 8) & 0x03])
     write_u8(target, REG_CTRL, (mode & 1) | ((mode2 & 1) << 1))
+
+
+def b_write_plan(b_values, b_load_policy, b_scrub_mod_q):
+    """Return (first REG_B write, value present at start) arrays.
+
+    inputs.npz keeps `b` as the logical TVLA grouping value. These two arrays
+    record what was actually sent to the target, which is essential for F11.
+    """
+    b_values = np.asarray(b_values, dtype=np.uint32)
+    scrub = np.uint32(b_scrub_mod_q)
+
+    if b_load_policy == "normal":
+        return b_values.copy(), b_values.copy()
+    if b_load_policy == "constant":
+        arr = np.full(b_values.shape, scrub, dtype=np.uint32)
+        return arr.copy(), arr.copy()
+    if b_load_policy == "random-then-scrub":
+        first = b_values.copy()
+        effective = np.full(b_values.shape, scrub, dtype=np.uint32)
+        return first, effective
+
+    raise ValueError(f"unknown b_load_policy={b_load_policy!r}")
 
 
 # ----------------------------------------------------------------------------
@@ -397,9 +423,16 @@ def capture_loop(
     trigger_mode,
     vary="b",
     k_max=256,
+    b_load_policy="normal",
+    b_scrub_mod_q=None,
+    pre_arm_delay_ms=0.0,
     poll_interval=0.0005, poll_timeout=0.5,
 ):
     rng = np.random.default_rng(seed)
+    if b_scrub_mod_q is None:
+        b_scrub_mod_q = int(b_fixed % q)
+    b_scrub_mod_q = int(b_scrub_mod_q % q)
+
     if vary == "b":
         # TVLA-style: b varies (fixed/random groups), k stays fixed.
         groups   = rng.integers(0, 2, size=n_traces, dtype=np.uint8)  # 0=fixed,1=random
@@ -415,6 +448,10 @@ def capture_loop(
         k_values = rng.integers(0, k_max, size=n_traces, dtype=np.uint16)
     else:
         raise ValueError(f"vary must be 'b' or 'k', not {vary!r}")
+
+    b_first_write, b_effective_start = b_write_plan(
+        b_values, b_load_policy, b_scrub_mod_q
+    )
 
     traces   = np.empty((n_traces, samples), dtype=np.float32)
     out1_arr = np.empty(n_traces, dtype=np.uint32)
@@ -433,15 +470,34 @@ def capture_loop(
     else:
         secret_summary = (f"vary=k  k uniform in [0,{k_max})  "
                           f"(a={hex(a)}, b fixed at {hex(b_fixed % q)} = the SECRET)")
+    if b_load_policy == "normal":
+        load_summary = "REG_B at start follows the logical b value"
+    elif b_load_policy == "constant":
+        load_summary = f"REG_B write forced to fixed scrub={hex(b_scrub_mod_q)}"
+    else:
+        load_summary = (f"REG_B first follows logical b, then is scrubbed to "
+                        f"{hex(b_scrub_mod_q)} before scope.arm()")
     print(f"[capture] starting {n_traces} traces, {samples} samples each "
           f"(trigger={trigger_mode}, {secret_summary})")
+    print(f"[capture] b_load_policy={b_load_policy}: {load_summary}")
     t0 = time.time()
     fail_count = 0
 
     for i in range(n_traces):
-        b_val = int(b_values[i])
+        b_first = int(b_first_write[i])
+        b_effective = int(b_effective_start[i])
         k_val = int(k_values[i])
-        write_inputs(target, a, b_val, k_val, mode, mode2)
+        write_inputs(target, a, b_first, k_val, mode, mode2)
+
+        # F11 diagnostic path: preserve the fixed-vs-random group labels and
+        # the initial REG_B write, but make the last REG_B write before arm
+        # fixed. If the TVLA peak disappears, the previous peak was dominated
+        # by the input/write path state rather than the arithmetic core.
+        if b_load_policy == "random-then-scrub":
+            write_u32(target, REG_B, b_effective)
+
+        if pre_arm_delay_ms > 0:
+            time.sleep(pre_arm_delay_ms / 1000.0)
 
         scope.arm()
 
@@ -488,7 +544,10 @@ def capture_loop(
                   f"fails={fail_count}")
 
     print(f"[capture] done. total_fail={fail_count}")
-    return traces, b_values, groups, out1_arr, out2_arr, k_values
+    return (
+        traces, b_values, groups, out1_arr, out2_arr, k_values,
+        b_first_write, b_effective_start,
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -559,13 +618,29 @@ def main():
     # Variable input (b) settings:
     p.add_argument("--b-fixed", type=lambda x: int(x, 0), default=0x12345678,
                    help="Fixed value used by group A (will be reduced mod q)")
-    p.add_argument("--seed", type=int, default=0xC0FFEE,
+    p.add_argument("--seed", type=lambda x: int(x, 0), default=0xC0FFEE,
                    help="RNG seed for group/randomness")
     p.add_argument("--vary", choices=["b", "k"], default="b",
                    help="'b' (default, TVLA): fixed-vs-random b, k fixed.  "
                         "'k' (CPA): k varies, b fixed (b_fixed is the secret).")
     p.add_argument("--k-max", type=int, default=256,
                    help="When --vary k, sample k uniformly from [0, k-max).")
+    p.add_argument("--b-load-policy",
+                   choices=["normal", "constant", "random-then-scrub"],
+                   default="normal",
+                   help="How REG_B is loaded before each trace. 'normal' writes "
+                        "the logical TVLA b value. 'constant' preserves group "
+                        "labels but always writes --b-scrub-value. "
+                        "'random-then-scrub' writes the logical b first, then "
+                        "overwrites REG_B with --b-scrub-value before arm/start "
+                        "(F11 reproduction).")
+    p.add_argument("--b-scrub-value", type=lambda x: int(x, 0), default=None,
+                   help="Fixed REG_B value for --b-load-policy constant or "
+                        "random-then-scrub. Default is --b-fixed reduced mod q.")
+    p.add_argument("--pre-arm-delay-ms", type=float, default=0.0,
+                   help="Diagnostic delay after the final input/scrub write and "
+                        "before scope.arm(). Use 0 for F11; fixed delays are not "
+                        "a security countermeasure.")
     args = p.parse_args()
 
     bitpath = Path(args.bitfile).expanduser().resolve()
@@ -576,9 +651,14 @@ def main():
     q = KYBER_Q if args.mode2 == 0 else DILITHIUM_Q
     a_raw = args.a & 0xFFFFFFFF
     a_mod = args.a % q
+    b_scrub_raw = args.b_fixed if args.b_scrub_value is None else args.b_scrub_value
+    b_scrub_mod_q = int(b_scrub_raw % q)
     if a_raw != a_mod:
         print(f"[inputs] reducing a modulo q for RTL canonical input: "
               f"0x{a_raw:08x} -> {a_mod} (q={q})")
+    if args.b_load_policy != "normal" and (b_scrub_raw & 0xFFFFFFFF) != b_scrub_mod_q:
+        print(f"[inputs] reducing b scrub value modulo q: "
+              f"0x{b_scrub_raw & 0xFFFFFFFF:08x} -> {b_scrub_mod_q} (q={q})")
 
     import chipwhisperer as cw
 
@@ -631,7 +711,10 @@ def main():
     print(f"[out] results dir: {out_dir}")
 
     try:
-        traces, b_arr, groups, out1_arr, out2_arr, k_arr = capture_loop(
+        (
+            traces, b_arr, groups, out1_arr, out2_arr, k_arr,
+            b_first_arr, b_effective_arr,
+        ) = capture_loop(
             scope, target,
             n_traces=args.num_traces, samples=capture_samples,
             a=a_mod, k=args.k, mode=args.mode, mode2=args.mode2,
@@ -639,6 +722,9 @@ def main():
             seed=args.seed,
             trigger_mode=args.trigger_mode,
             vary=args.vary, k_max=args.k_max,
+            b_load_policy=args.b_load_policy,
+            b_scrub_mod_q=b_scrub_mod_q,
+            pre_arm_delay_ms=args.pre_arm_delay_ms,
         )
     finally:
         try:
@@ -656,6 +742,8 @@ def main():
         a=np.full(args.num_traces, a_mod, dtype=np.uint32),
         a_raw=np.full(args.num_traces, a_raw, dtype=np.uint32),
         b=b_arr,
+        b_first_write=b_first_arr,
+        b_effective_start=b_effective_arr,
         k=k_arr,
         mode=np.full(args.num_traces, args.mode, dtype=np.uint8),
         mode2=np.full(args.num_traces, args.mode2, dtype=np.uint8),
@@ -689,6 +777,15 @@ def main():
             "b_fixed_mod_q":  int(args.b_fixed % q),
             "random_b_range": [0, q] if args.vary == "b" else None,
             "random_k_range": [0, args.k_max] if args.vary == "k" else None,
+        },
+        "capture_protocol": {
+            "b_load_policy":       args.b_load_policy,
+            "b_scrub_value":       f"0x{b_scrub_raw & 0xFFFFFFFF:08x}",
+            "b_scrub_mod_q":       b_scrub_mod_q,
+            "pre_arm_delay_ms":    float(args.pre_arm_delay_ms),
+            "b_field_note":        "inputs['b'] is the logical TVLA grouping value; "
+                                   "inputs['b_effective_start'] is the value present "
+                                   "in REG_B when start is asserted.",
         },
         "seed":         args.seed,
         "bitfile":      str(bitpath),
