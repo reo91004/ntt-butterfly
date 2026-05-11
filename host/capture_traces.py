@@ -30,8 +30,8 @@ Per trace:
 Stored under  results/<timestamp>_<label>/  :
     traces.npy        (N, samples) float32
     inputs.npz        a, b, b_first_write, b_effective_start, k, mode, mode2,
-                      b_preload_write, b_core_start, group, out1, out2
-                      (all per-trace)
+                      b_preload_write, b_core_start, b_mask_share0,
+                      b_mask_share1, group, out1, out2 (all per-trace)
     metadata.json     experiment + scope settings + device serials
 """
 
@@ -239,12 +239,21 @@ def b_write_plan(b_values, b_load_policy, b_scrub_mod_q):
     raise ValueError(f"unknown b_load_policy={b_load_policy!r}")
 
 
-def b_preload_plan(b_values, b_preload_policy):
+def b_preload_plan(b_values, b_preload_policy, rng, q):
     b_values = np.asarray(b_values, dtype=np.uint32)
+    zero = np.zeros(b_values.shape, dtype=np.uint32)
     if b_preload_policy == "none":
-        return np.zeros(b_values.shape, dtype=np.uint32)
+        return zero.copy(), zero.copy(), zero.copy()
     if b_preload_policy == "logical":
-        return b_values.copy()
+        return b_values.copy(), zero.copy(), zero.copy()
+    if b_preload_policy in ("masked-share0", "masked-share1"):
+        share0 = rng.integers(0, q, size=b_values.shape, dtype=np.uint32)
+        share1 = (
+            (b_values.astype(np.int64) - share0.astype(np.int64)) % int(q)
+        ).astype(np.uint32)
+        if b_preload_policy == "masked-share0":
+            return share0.copy(), share0, share1
+        return share1.copy(), share0, share1
     raise ValueError(f"unknown b_preload_policy={b_preload_policy!r}")
 
 
@@ -490,7 +499,9 @@ def capture_loop(
     b_first_write, b_effective_start = b_write_plan(
         b_values, b_load_policy, b_scrub_mod_q
     )
-    b_preload_write = b_preload_plan(b_values, b_preload_policy)
+    b_preload_write, b_mask_share0, b_mask_share1 = b_preload_plan(
+        b_values, b_preload_policy, rng, q
+    )
     b_core_start = b_core_start_plan(
         b_effective_start, b_preload_write, use_b_preload, force_core_b_zero
     )
@@ -620,6 +631,7 @@ def capture_loop(
     return (
         traces, b_values, groups, out1_arr, out2_arr, k_values,
         b_first_write, b_effective_start, b_preload_write, b_core_start,
+        b_mask_share0, b_mask_share1,
     )
 
 
@@ -714,10 +726,14 @@ def main():
                    help="Diagnostic delay after the final input/scrub write and "
                         "before scope.arm(). Use 0 for F11; fixed delays are not "
                         "a security countermeasure.")
-    p.add_argument("--b-preload-policy", choices=["none", "logical"], default="none",
+    p.add_argument("--b-preload-policy",
+                   choices=["none", "logical", "masked-share0", "masked-share1"],
+                   default="none",
                    help="'logical' writes the logical TVLA b value to REG_B_PRELOAD "
                         "before the REG_B scrub path. Used for Exp G preload/scrub "
-                        "core-input experiments.")
+                        "core-input experiments. 'masked-share0' and "
+                        "'masked-share1' split b = b0 + b1 mod q and preload one "
+                        "randomized share for first-order masking diagnostics.")
     p.add_argument("--use-b-preload", action="store_true",
                    help="Start the core from REG_B_PRELOAD instead of REG_B. "
                         "Requires a bitstream with the preload wrapper registers.")
@@ -740,6 +756,9 @@ def main():
     if args.use_b_preload and args.b_preload_policy == "none":
         print("[inputs] WARNING: --use-b-preload is set but --b-preload-policy=none; "
               "b_preload will be 0 for every trace.")
+    if args.b_preload_policy.startswith("masked-") and not args.use_b_preload:
+        print("[inputs] WARNING: masked preload policy selected without "
+              "--use-b-preload; shares will be written but core will not use them.")
 
     q = KYBER_Q if args.mode2 == 0 else DILITHIUM_Q
     a_raw = args.a & 0xFFFFFFFF
@@ -810,6 +829,7 @@ def main():
         (
             traces, b_arr, groups, out1_arr, out2_arr, k_arr,
             b_first_arr, b_effective_arr, b_preload_arr, b_core_start_arr,
+            b_mask_share0_arr, b_mask_share1_arr,
         ) = capture_loop(
             scope, target,
             n_traces=args.num_traces, samples=capture_samples,
@@ -846,6 +866,8 @@ def main():
         b_effective_start=b_effective_arr,
         b_preload_write=b_preload_arr,
         b_core_start=b_core_start_arr,
+        b_mask_share0=b_mask_share0_arr,
+        b_mask_share1=b_mask_share1_arr,
         k=k_arr,
         mode=np.full(args.num_traces, args.mode, dtype=np.uint8),
         mode2=np.full(args.num_traces, args.mode2, dtype=np.uint8),
@@ -893,7 +915,9 @@ def main():
                                    "inputs['b_effective_start'] is the value present "
                                    "in REG_B when start is asserted; "
                                    "inputs['b_core_start'] is the value selected "
-                                   "for b_core by the wrapper.",
+                                   "for b_core by the wrapper; "
+                                   "for masked-share policies, "
+                                   "b = b_mask_share0 + b_mask_share1 mod q.",
         },
         "seed":         args.seed,
         "bitfile":      str(bitpath),

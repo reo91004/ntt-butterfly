@@ -24,6 +24,7 @@
 | [E](exp_E_cpa.md) | CPA — 공격 가능성 점검 | yes (vary k) | b fixed=1291 | canonical rerun에서 true rank 1550/1829 수준 — naive HW CPA exploitable 결론 미확인 |
 | [F](exp_F_input_write_isolation.md) | 입력 write path 분리 | temporary variants | b write varies | core/S7를 끊어도 peak 유지, arm 직전 fixed B scrub 시 peak 소멸 — 현재 dominant peak는 `REG_B` write/input path |
 | [G](exp_G_core_preload_isolation.md) | preload/scrub core-only 분리 | yes | b_core varies | `REG_B` start 값 fixed인데도 core-only TVLA peak `|t|=29.8-33.7` — butterfly core 누설 확인 |
+| [H](exp_H_masked_core_diagnostic.md) | core masking 진단 | yes | b_core share varies | logical `b` 대신 random share를 core에 넣으면 `|t|=31.2` → `3.15/1.54`로 하락 |
 
 부록:
 [현재 결론 요약](current_leakage_summary.md) — 목표, 실험 흐름, 최종 결론을 쉽게 정리.

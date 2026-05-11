@@ -706,9 +706,9 @@ peak가 유지됐고, arm 직전 fixed B scrub으로 사라졌다. 따라서 sam
 - **Separate-impl baseline**: Kyber 단독 / Dilithium 단독 bitstream 을 별도
   합성해서 같은 input/seed 로 캡처. unified vs separate 의 |t| 차이를 직접
   비교하면 "통합이 만든 신규 누설" 을 정량화 가능. (Vivado 합성 작업 필요)
-- **Boolean masking 적용 후 재측정**: core-only TVLA가 재현됐으므로 다음 구현 후보.
-  secret 값을 random share `r` 로 분해해 multiplier 입력 두 register 에 분산 저장하고
-  |t| 가 얼마나 떨어지는지 비교.
+- **Boolean masking 확장 구현**: Exp H에서 random share를 core에 넣는 diagnostic은
+  `|t|=31.2`를 `3.15/1.54`로 낮췄다. 다음은 두 share를 모두 하드웨어에서 계산하고
+  unmasked recombination을 capture window 밖으로 미루는 완성형 share-wise RTL이다.
 - **Profiling/template attack**: training set 에서 leakage 모델을 추정한 뒤
   attack set 에 적용. naive HW CPA 가 실패한 canonical 조건에서도 더 정교한
   공격이 가능한지 확인.

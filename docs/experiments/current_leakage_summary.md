@@ -229,6 +229,23 @@ masking은 의미가 있다. Exp G로 core-only 누출이 재현됐기 때문이
 평가할 때는 normal capture가 아니라 preload/scrub 구조를 기준으로 해야 한다. 그래야
 host write path artifact와 core leakage를 분리해서 볼 수 있다.
 
+이 방향은 [Exp H](exp_H_masked_core_diagnostic.md)에서 1차로 확인했다.
+
+```text
+unmasked b_core = logical b
+  -> |t| = 31.186 @ sample 23
+
+masked b_core = random share b0
+  -> |t| = 3.153, no first-order leakage
+
+masked b_core = random share b1
+  -> |t| = 1.537, no first-order leakage
+```
+
+Exp H는 완성형 masked NTT 구현은 아니고, core preload 경로에 random share를 넣어
+first-order leakage가 내려가는지 확인한 diagnostic이다. 하지만 결과는 masking 방향이
+실제로 의미 있음을 보여준다.
+
 가장 현실적인 다음 단계:
 
 - `b`를 arithmetic share로 나눠 multiplier/Montgomery를 share-wise로 처리.
