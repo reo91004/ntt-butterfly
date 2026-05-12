@@ -18,10 +18,6 @@
 // inputs (a, b) and ref_zeta live in. The surrounding NTT pipeline is assumed
 // to be in the Montgomery domain (operands scaled by R), so the per-butterfly
 // R^-1 from the reducer cancels the R already present on the b operand.
-//
-// The mux2_1 / demux1_2 sub-modules from the previous version are inlined
-// here so register insertion stays clean. They remain available in the
-// project for any other instantiations and are otherwise unused.
 
 module unified_butterfly2_core(
     input              clk,

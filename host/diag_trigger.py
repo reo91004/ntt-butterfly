@@ -28,6 +28,7 @@ from pathlib import Path
 
 from sca_config import (
     REG_A, REG_B, REG_K, REG_CTRL, REG_STATUS, REG_OUT1, REG_OUT2,
+    REG_A_SHARE1, REG_B_SHARE1,
     REG_WRCOUNT, REG_LAST_ADDR, REG_LAST_BYTE, REG_LAST_DATA, REG_FE_WRCOUNT,
     REG_ID, DONE_MASK, BUSY_MASK,
     EXCLUDE_SCOPE_SERIAL, DEFAULT_TARGET_FREQ_HZ,
@@ -103,8 +104,6 @@ def main():
                    help="ADC oversample multiplier. 0=auto: Husky/Husky-Plus x2, CW-Lite/Pro x1.")
     p.add_argument("--samples", type=int, default=2000,
                    help="Samples for the trigger-detection capture.")
-    p.add_argument("--host-toggle-samples", type=int, default=50000,
-                   help="Samples for the legacy host-toggle control experiment.")
     args = p.parse_args()
 
     import chipwhisperer as cw
@@ -190,7 +189,9 @@ def main():
     # ----- Stage D: status state machine -----
     banner("Stage D — busy/done state on a butterfly run")
     fpga_write_bytes(target, REG_A,    [0xBE, 0xBA, 0xFE, 0xCA])  # a = 0xCAFEBABE
+    fpga_write_bytes(target, REG_A_SHARE1, [0x00, 0x00, 0x00, 0x00])
     fpga_write_bytes(target, REG_B,    [0x40, 0x00, 0x00, 0x00])  # b = 64
+    fpga_write_bytes(target, REG_B_SHARE1, [0x00, 0x00, 0x00, 0x00])
     fpga_write_bytes(target, REG_K,    [0x10, 0x00])              # k = 16
     fpga_write_bytes(target, REG_CTRL, [0x01])                    # mode=1, mode2=0
 
@@ -231,7 +232,9 @@ def main():
     time.sleep(0.005)
 
     fpga_write_bytes(target, REG_A,    [0xBE, 0xBA, 0xFE, 0xCA])
+    fpga_write_bytes(target, REG_A_SHARE1, [0x00, 0x00, 0x00, 0x00])
     fpga_write_bytes(target, REG_B,    [0x42, 0x00, 0x00, 0x00])
+    fpga_write_bytes(target, REG_B_SHARE1, [0x00, 0x00, 0x00, 0x00])
     fpga_write_bytes(target, REG_K,    [0x10, 0x00])
     fpga_write_bytes(target, REG_CTRL, [0x01])
 
@@ -254,29 +257,6 @@ def main():
             print(f"  trace shape={wave.shape}  min={wave.min():.4f}  max={wave.max():.4f}")
         except Exception as e:
             print(f"  get_last_trace error: {e}")
-
-    # ----- Stage E.2: try host-toggle as a control experiment -----
-    if hasattr(target, "usb_trigger_toggle"):
-        banner("Stage E.2 — control experiment: host-toggle trigger")
-        fpga_write_bytes(target, REG_STATUS, [0x02])
-        time.sleep(0.005)
-        # Use a wider sample window for this mode (USB latency margin).
-        host_toggle_samples = int(args.host_toggle_samples)
-        if scope_kind in ("lite", "pro") and host_toggle_samples > 20000:
-            print("  limiting host-toggle control capture to 20000 samples for CW-Lite/Pro")
-            host_toggle_samples = 20000
-        scope.adc.samples = host_toggle_samples
-        scope.arm()
-        target.usb_trigger_toggle()
-        fpga_write_bytes(target, REG_STATUS, [0x01])
-        t0 = time.time()
-        while time.time() - t0 < 0.5:
-            if fpga_read_byte(target, REG_STATUS) & DONE_MASK:
-                break
-            time.sleep(0.0002)
-        ret2 = scope.capture()
-        print(f"  scope.capture() (host-toggle) -> {ret2}   "
-              f"({'TIMEOUT' if ret2 else 'OK (trigger seen)'})")
 
     # ----- cleanup -----
     banner("Disconnecting")

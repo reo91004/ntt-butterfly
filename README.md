@@ -109,12 +109,10 @@ butterfly/
 ├── rtl/                                      — human-readable Verilog mirror (kept in sync)
 │   ├── cw305_unified_butterfly2_top_v4_directwrite.v   # CW305 USB-register wrapper
 │   ├── cw305_usb_reg_fe.v                              # NewAE official USB register frontend
-│   ├── unified_butterfly2_top.v                        # mux + ROM + core wiring
+│   ├── unified_butterfly2_top.v                        # masked two-share ROM + core wiring
 │   ├── unified_bufferfly2.v                            # 7-stage pipelined butterfly core
 │   │                                                   #   (filename has typo "bufferfly", kept for Vivado)
-│   ├── Modular_Reduction32.v                           # 4-stage Montgomery reducer
-│   ├── mux2_1.v                                        # legacy small mux (unused after pipeline)
-│   └── demux1_2.v                                      # legacy small demux (unused)
+│   └── Modular_Reduction32.v                           # 4-stage Montgomery reducer
 │
 ├── constraints/
 │   └── cw305_unified_butterfly2_top_v4.xdc            # pin map + clocks for CW305
@@ -174,10 +172,9 @@ navigation. Keep both copies in sync when editing RTL.
 |---|---|---|
 | `Modular_Reduction32.v` | `Modular_Reduction32` | 4-stage pipelined Montgomery reduction (R = 2^32). QPRIME constants chosen automatically per `q`. |
 | `unified_bufferfly2.v` | `unified_butterfly2_core` | 7-stage pipelined CT/GS butterfly. Pre-mul mux → 32×32 multiplier → Montgomery → final add/sub. Latency 7 cycles, throughput 1/cycle. |
-| `unified_butterfly2_top.v` | `unified_butterfly2_top`, `masked_unified_butterfly2_top` | Wraps the core with the ROM (`blk_mem_gen_0`), selects the correct ζ zone via `mode`/`mode2`; masked top runs two additive shares without recombining inside RTL. |
+| `unified_butterfly2_top.v` | `masked_unified_butterfly2_top` | Wraps two share cores with the ROM (`blk_mem_gen_0`), selects the correct ζ zone via `mode`/`mode2`, and never recombines shares inside RTL. |
 | `cw305_usb_reg_fe.v` | `cw305_usb_reg_fe` | NewAE official module that decodes the SAM3U USB-FIFO parallel interface into register-style read/write signals. |
-| `cw305_unified_butterfly2_top_v4_directwrite.v` | `cw305_unified_butterfly2_top_v4` | Top module. Defines the register map, latches unmasked or masked share inputs, drives the butterfly, keeps output shares separate in masked mode, and asserts `tio_trigger` for the SCA scope. |
-| `mux2_1.v`, `demux1_2.v` | small combinational helpers, kept for Vivado project history; unused after the pipelined core was inlined. |
+| `cw305_unified_butterfly2_top_v4_directwrite.v` | `cw305_unified_butterfly2_top_v4` | Top module. Defines the register map, latches masked share inputs, drives the butterfly, keeps output shares separate, and asserts `tio_trigger` for the SCA scope. |
 
 ### 5.2 Constraints + sim
 
@@ -242,14 +239,11 @@ internal path references.
 
 ### 6.3 RTL change for SCA alignment
 
-Original wrapper had `assign tio_trigger = usb_trigger;` — meaning the host had to toggle
-a separate USB trigger pin, with USB-transaction latency (~125 µs on Husky) between the
-trigger and the actual butterfly start. Trace alignment would suffer.
+Original wrapper used an external USB trigger pin, meaning the host had to toggle a
+separate signal and absorb USB-transaction latency between trigger and butterfly start.
 
-Changed both copies of the wrapper so the default build drives
-`tio_trigger = trigger_reg` via `pUSE_INTERNAL_TRIGGER=1`. Now `tio_trigger` rises
-from a hardware start-aligned register, with an optional target-cycle delay from
-`CTRL[7:5]`. Set `pUSE_INTERNAL_TRIGGER=0` only for legacy host-toggle tests.
+The wrapper now has a single trigger path: `tio_trigger = trigger_reg`. The trigger
+rises from the same hardware start event that latches the masked shares into the core.
 The bitstream must be re-synthesized after this change.
 
 ### 6.4 Host pipeline added
@@ -320,7 +314,6 @@ python3 host/capture_traces.py \
 
 Defaults:
 - scope auto-detect (Husky-Plus, Husky, Lite, Pro)
-- `--trigger-mode internal` (assumes the new wrapper with `tio_trigger = trigger_reg`)
 - `--target-freq 96e6`, `--adc-mul 0` (auto: Husky/Husky-Plus x2, CW-Lite/Pro x1)
 - a-input 0xCAFEBABE is reduced mod q before FPGA write, b-fixed 0x12345678 is reduced mod q, seed 0xC0FFEE for reproducibility
 - output → `host/results/<timestamp>_kyber_ct_b_first/`
@@ -366,12 +359,8 @@ A peak with `|t| > 4.5` flags input-dependent leakage at that sample.
 --scope-sn SN                   force scope serial (else auto, see EXCLUDE list)
 --target-sn SN                  force CW305 serial (else auto)
 --scope-type {auto,husky-plus,husky,lite,pro}
---trigger-mode {internal,host-toggle}
-                                internal   = recommended, requires new wrapper
-                                host-toggle = legacy bitstream fallback (wider
-                                              --samples needed to absorb USB latency)
 --num-traces N                  default 2000
---samples N                     default 400 (internal) — go to ~50000 for host-toggle
+--samples N                     default 400
 --sample-cycles F               convert target cycles to samples using adc_mul
 --gain-db F                     default 25
 --target-freq F                 default 96e6   (CW305 usb_clk target)
@@ -404,9 +393,8 @@ separate workstation where no scope needs to be reserved.
    `pll_locked=true` and an ADC frequency near 192 MHz for the standard Husky setup.
 
 3. **Trace alignment depends on the wrapper change.** If the .bit on the FPGA was built
-   from the *old* wrapper (`tio_trigger = usb_trigger`), `--trigger-mode internal` will
-   time out with "no trigger seen". Either re-synthesize, or use `--trigger-mode host-toggle`
-   with a much wider `--samples` window.
+   from the old external-trigger wrapper, rebuild the bitstream. The host capture script
+   now assumes the single hardware-aligned trigger path.
 
 4. **Two synchronized RTL copies.** Vivado compiles
    `unified_butterfly2/.srcs/sources_1/new/`; `rtl/` is the review-friendly mirror.

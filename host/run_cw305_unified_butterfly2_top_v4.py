@@ -3,19 +3,24 @@
 CW305 unified_butterfly2 test script for v4 direct-write wrapper.
 
 Register map:
-  0x00 : A[31:0]     legacy alias
-  0x01 : B[31:0]     4 bytes little-endian
+  0x00 : A_SHARE0[31:0] legacy alias
+  0x01 : B_SHARE0[31:0] 4 bytes little-endian
   0x02 : K[9:0]      2 bytes little-endian
   0x03 : CTRL        1 byte, bit0=mode, bit1=mode2
   0x04 : CMD/STATUS  write bit0=start, bit1=clear_done; read bit0=done, bit1=busy
-  0x05 : OUT1[31:0]  4 bytes little-endian
-  0x06 : OUT2[31:0]  4 bytes little-endian
-  0x0D : A[31:0]     4 bytes little-endian (host-safe alias)
+  0x05 : OUT1_SHARE0[31:0] 4 bytes little-endian
+  0x06 : OUT2_SHARE0[31:0] 4 bytes little-endian
+  0x08 : A_SHARE1[31:0] 4 bytes little-endian
+  0x09 : B_SHARE1[31:0] 4 bytes little-endian
+  0x0A : OUT1_SHARE1[31:0] 4 bytes little-endian
+  0x0B : OUT2_SHARE1[31:0] 4 bytes little-endian
+  0x0D : A_SHARE0[31:0] 4 bytes little-endian (host-safe alias)
   0x70..0x73 : write debug
   0x7E : ID = 0xC4
 """
 
 import argparse
+import random
 import sys
 import time
 from pathlib import Path
@@ -29,6 +34,10 @@ REG_CTRL = 0x03
 REG_STATUS = 0x04
 REG_OUT1 = 0x05
 REG_OUT2 = 0x06
+REG_A_SHARE1 = 0x08
+REG_B_SHARE1 = 0x09
+REG_OUT1_SHARE1 = 0x0A
+REG_OUT2_SHARE1 = 0x0B
 REG_WRCOUNT = 0x70
 REG_LAST_ADDR = 0x71
 REG_LAST_BYTE = 0x72
@@ -39,6 +48,8 @@ REG_ID = 0x7E
 
 DONE_MASK = 0x01
 BUSY_MASK = 0x02
+KYBER_Q = 3329
+DILITHIUM_Q = 8380417
 
 
 def b(x):
@@ -105,28 +116,46 @@ def debug_readback(target):
     print(f"    fe_wrcnt = 0x{read_u8(target, REG_FE_WRCOUNT):02x}")
 
 
-def write_inputs(target, a, bval, k, mode, mode2):
-    print("[3] writing inputs")
-    print(f"    a=0x{a & 0xFFFFFFFF:08x} ({a})")
-    print(f"    b=0x{bval & 0xFFFFFFFF:08x} ({bval})")
+def split_value(value, share1, q):
+    value %= q
+    share1 %= q
+    return (value - share1) % q, share1
+
+
+def write_inputs(target, a, bval, k, mode, mode2, seed):
+    q = KYBER_Q if mode2 == 0 else DILITHIUM_Q
+    rng = random.Random(seed)
+    a0, a1 = split_value(a, rng.randrange(q), q)
+    b0, b1 = split_value(bval, rng.randrange(q), q)
+
+    print("[3] writing masked inputs")
+    print(f"    a=0x{a % q:08x} ({a % q}) = a0({a0}) + a1({a1}) mod {q}")
+    print(f"    b=0x{bval % q:08x} ({bval % q}) = b0({b0}) + b1({b1}) mod {q}")
     print(f"    k={k}")
     print(f"    mode={mode}, mode2={mode2}")
-    write_u32(target, REG_A, a)
-    write_u32(target, REG_B, bval)
+    write_u32(target, REG_A, a0)
+    write_u32(target, REG_A_SHARE1, a1)
+    write_u32(target, REG_B, b0)
+    write_u32(target, REG_B_SHARE1, b1)
     write_bytes(target, REG_K, [k & 0xFF, (k >> 8) & 0x03])
     write_u8(target, REG_CTRL, (mode & 1) | ((mode2 & 1) << 1))
+    return q
 
 
 def readback_inputs(target):
     a_rb = read_u32(target, REG_A)
     b_rb = read_u32(target, REG_B)
+    a1_rb = read_u32(target, REG_A_SHARE1)
+    b1_rb = read_u32(target, REG_B_SHARE1)
     k_bytes = read_bytes(target, REG_K, 2)
     k_rb = k_bytes[0] | ((k_bytes[1] & 0x03) << 8)
     ctrl = read_u8(target, REG_CTRL)
     stat = read_u8(target, REG_STATUS)
     print("[debug] input/status readback")
-    print(f"    a_rb = 0x{a_rb:08x} ({a_rb})")
-    print(f"    b_rb = 0x{b_rb:08x} ({b_rb})")
+    print(f"    a0_rb = 0x{a_rb:08x} ({a_rb})")
+    print(f"    a1_rb = 0x{a1_rb:08x} ({a1_rb})")
+    print(f"    b0_rb = 0x{b_rb:08x} ({b_rb})")
+    print(f"    b1_rb = 0x{b1_rb:08x} ({b1_rb})")
     print(f"    k_rb = {k_rb}  (bytes={list(k_bytes)})")
     print(f"    ctrl = 0x{ctrl:02x}  mode={ctrl & 1}, mode2={(ctrl >> 1) & 1}")
     print(f"    stat = 0x{stat:02x}  done={1 if stat & DONE_MASK else 0}, busy={1 if stat & BUSY_MASK else 0}")
@@ -179,6 +208,7 @@ def main():
     p.add_argument("--k", type=lambda x: int(x, 0), required=True)
     p.add_argument("--mode", type=int, choices=[0, 1], required=True)
     p.add_argument("--mode2", type=int, choices=[0, 1], required=True)
+    p.add_argument("--seed", type=int, default=1)
     p.add_argument("--timeout", type=float, default=2.0)
     p.add_argument("--poll-interval", type=float, default=0.001)
     p.add_argument("--debug-readback", action="store_true")
@@ -188,16 +218,24 @@ def main():
     target = connect(args.bitfile, args.no_program)
     if args.debug_readback:
         debug_readback(target)
-    write_inputs(target, args.a, args.b, args.k, args.mode, args.mode2)
+    q = write_inputs(target, args.a, args.b, args.k, args.mode, args.mode2, args.seed)
     readback_inputs(target)
     start(target)
     status = wait_done(target, args.timeout, args.poll_interval, args.poll_log)
     print(f"[5] done, status=0x{status:02x}")
-    out1 = read_u32(target, REG_OUT1)
-    out2 = read_u32(target, REG_OUT2)
+    out1_s0 = read_u32(target, REG_OUT1)
+    out2_s0 = read_u32(target, REG_OUT2)
+    out1_s1 = read_u32(target, REG_OUT1_SHARE1)
+    out2_s1 = read_u32(target, REG_OUT2_SHARE1)
+    out1 = (out1_s0 + out1_s1) % q
+    out2 = (out2_s0 + out2_s1) % q
     print("[6] output")
-    print(f"    out1=0x{out1:08x} ({out1})")
-    print(f"    out2=0x{out2:08x} ({out2})")
+    print(f"    out1_share0=0x{out1_s0:08x} ({out1_s0})")
+    print(f"    out1_share1=0x{out1_s1:08x} ({out1_s1})")
+    print(f"    out1       =0x{out1:08x} ({out1})")
+    print(f"    out2_share0=0x{out2_s0:08x} ({out2_s0})")
+    print(f"    out2_share1=0x{out2_s1:08x} ({out2_s1})")
+    print(f"    out2       =0x{out2:08x} ({out2})")
     return 0
 
 

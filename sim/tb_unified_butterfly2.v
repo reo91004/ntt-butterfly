@@ -20,8 +20,12 @@ module tb_unified_butterfly2_top;
     reg  mode2; // 0: Kyber 1: Dil
     reg  [9:0]  k;
 
-    wire [31:0] out1;
-    wire [31:0] out2;
+    wire [31:0] out1_0;
+    wire [31:0] out1_1;
+    wire [31:0] out2_0;
+    wire [31:0] out2_1;
+    wire [31:0] out1 = out1_0 + out1_1;
+    wire [31:0] out2 = out2_0 + out2_1;
 
     integer err;
 
@@ -30,15 +34,19 @@ module tb_unified_butterfly2_top;
     // + 1 (rom) + 7 (core) = 9 cycles. Wait a couple extra to be safe.
     localparam OBS_LATENCY = 11;
 
-    unified_butterfly2_top DUT (
-        .clk   (clk),
-        .a     (a),
-        .b     (b),
-        .mode  (mode),
-        .mode2 (mode2),
-        .k     (k),
-        .out1  (out1),
-        .out2  (out2)
+    masked_unified_butterfly2_top DUT (
+        .clk    (clk),
+        .a0     (a),
+        .a1     (32'd0),
+        .b0     (b),
+        .b1     (32'd0),
+        .mode   (mode),
+        .mode2  (mode2),
+        .k      (k),
+        .out1_0 (out1_0),
+        .out1_1 (out1_1),
+        .out2_0 (out2_0),
+        .out2_1 (out2_1)
     );
 
     initial clk = 1'b0;

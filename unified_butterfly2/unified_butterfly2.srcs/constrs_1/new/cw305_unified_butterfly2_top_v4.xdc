@@ -3,7 +3,6 @@
 #
 # Top module ports expected:
 #   usb_clk, usb_data[7:0], usb_addr[20:0], usb_rdn, usb_wrn, usb_cen,
-#   usb_trigger,
 #   j16_sel, k16_sel, k15_sel, l14_sel, pushbutton,
 #   led1, led2, led3,
 #   pll_clk1,
@@ -87,7 +86,6 @@ set_property PACKAGE_PIN D5 [get_ports {usb_addr[20]}]
 set_property PACKAGE_PIN A4 [get_ports usb_rdn]
 set_property PACKAGE_PIN C2 [get_ports usb_wrn]
 set_property PACKAGE_PIN A3 [get_ports usb_cen]
-set_property PACKAGE_PIN A5 [get_ports usb_trigger]
 
 ###############################################################################
 # I/O standard
@@ -110,7 +108,6 @@ set_clock_groups -asynchronous \
 ###############################################################################
 set_input_delay -clock usb_clk -add_delay 2.000 [get_ports usb_addr]
 set_input_delay -clock usb_clk -add_delay 2.000 [get_ports usb_data]
-set_input_delay -clock usb_clk -add_delay 2.000 [get_ports usb_trigger]
 set_input_delay -clock usb_clk -add_delay 2.000 [get_ports usb_cen]
 set_input_delay -clock usb_clk -add_delay 2.000 [get_ports usb_rdn]
 set_input_delay -clock usb_clk -add_delay 2.000 [get_ports usb_wrn]

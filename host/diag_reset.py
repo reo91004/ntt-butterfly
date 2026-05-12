@@ -7,7 +7,7 @@ The previous run showed:
   - direct_write_count never increments
   - raw_pins reads 0x00 (control lines stuck low)
   - status register reads 0x2e (impossible for the wrapper logic)
-  - host-toggle trigger DOES fire scope (so pulse path works)
+  - the external trigger path had previously been used only as a USB-link check
 
 This means the FPGA's USB FIFO interface is desynced from the SAM3U side.
 We try, in order:
