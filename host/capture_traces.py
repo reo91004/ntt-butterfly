@@ -12,7 +12,7 @@ trigger mode selection.
 
 Per trace:
   1. choose group (A=fixed-b, B=random-b)
-  2. split a and b into fresh additive shares
+  2. either split a/b into fresh additive shares or send share1=0 for unmasked
   3. write share0/share1, k, and ctrl over USB
   4. arm scope, write start, wait for done
   5. read trace and output shares; recombine only on the host
@@ -186,17 +186,25 @@ def read_u32(target, reg):
 def write_u32(target, reg, value):
     target.fpga_write(reg, u32_to_le(value))
 
-def write_masked_inputs(target, a0, a1, b0, b1, k, mode, mode2):
+def control_value(mode, mode2, core_start_delay=0):
+    return (
+        (mode & 1)
+        | ((mode2 & 1) << 1)
+        | ((core_start_delay & 0x7) << 5)
+    )
+
+
+def write_masked_inputs(target, a0, a1, b0, b1, k, mode, mode2, core_start_delay=0):
     write_u32(target, REG_A, a0)
     write_u32(target, REG_A_SHARE1, a1)
     write_u32(target, REG_B, b0)
     write_u32(target, REG_B_SHARE1, b1)
     target.fpga_write(REG_K, [k & 0xFF, (k >> 8) & 0x03])
-    write_u8(target, REG_CTRL, (mode & 1) | ((mode2 & 1) << 1))
+    write_u8(target, REG_CTRL, control_value(mode, mode2, core_start_delay))
 
 
-def write_control(target, mode, mode2):
-    ctrl = (mode & 1) | ((mode2 & 1) << 1)
+def write_control(target, mode, mode2, core_start_delay=0):
+    ctrl = control_value(mode, mode2, core_start_delay)
     write_u8(target, REG_CTRL, ctrl)
     return ctrl
 
@@ -412,6 +420,8 @@ def capture_loop(
     vary="b",
     k_max=256,
     poll_interval=0.0005, poll_timeout=0.5,
+    datapath="masked",
+    core_start_delay=0,
 ):
     rng = np.random.default_rng(seed)
 
@@ -432,8 +442,16 @@ def capture_loop(
         raise ValueError(f"vary must be 'b' or 'k', not {vary!r}")
 
     a_values = np.full(n_traces, np.uint32(a % q), dtype=np.uint32)
-    a_rtl_share0, a_rtl_share1 = additive_share_plan(a_values, rng, q)
-    b_rtl_share0, b_rtl_share1 = additive_share_plan(b_values, rng, q)
+    if datapath == "masked":
+        a_rtl_share0, a_rtl_share1 = additive_share_plan(a_values, rng, q)
+        b_rtl_share0, b_rtl_share1 = additive_share_plan(b_values, rng, q)
+    elif datapath == "unmasked":
+        a_rtl_share0 = a_values.astype(np.uint32, copy=True)
+        b_rtl_share0 = b_values.astype(np.uint32, copy=True)
+        a_rtl_share1 = np.zeros(n_traces, dtype=np.uint32)
+        b_rtl_share1 = np.zeros(n_traces, dtype=np.uint32)
+    else:
+        raise ValueError(f"datapath must be 'masked' or 'unmasked', not {datapath!r}")
 
     traces   = np.empty((n_traces, samples), dtype=np.float32)
     out1_arr = np.empty(n_traces, dtype=np.uint32)
@@ -443,7 +461,7 @@ def capture_loop(
     out2_share0_arr = np.empty(n_traces, dtype=np.uint32)
     out2_share1_arr = np.empty(n_traces, dtype=np.uint32)
 
-    exp_ctrl = write_control(target, mode, mode2)
+    exp_ctrl = write_control(target, mode, mode2, core_start_delay)
 
     if vary == "b":
         secret_summary = (f"vary=b  group A=fixed b={hex(b_fixed % q)}, "
@@ -453,7 +471,8 @@ def capture_loop(
                           f"(a={hex(a)}, b fixed at {hex(b_fixed % q)} = the SECRET)")
     print(f"[capture] starting {n_traces} traces, {samples} samples each "
           f"({secret_summary})")
-    print(f"[capture] always-masked RTL shares enabled, exp_ctrl=0x{exp_ctrl:02x}")
+    print(f"[capture] datapath={datapath}, core_start_delay={core_start_delay} cycles, "
+          f"exp_ctrl=0x{exp_ctrl:02x}")
     t0 = time.time()
     fail_count = 0
 
@@ -464,7 +483,7 @@ def capture_loop(
             target,
             int(a_rtl_share0[i]), int(a_rtl_share1[i]),
             int(b_rtl_share0[i]), int(b_rtl_share1[i]),
-            k_val, mode, mode2,
+            k_val, mode, mode2, core_start_delay,
         )
 
         scope.arm()
@@ -591,7 +610,15 @@ def main():
                         "'k' (CPA): k varies, b fixed (b_fixed is the secret).")
     p.add_argument("--k-max", type=int, default=256,
                    help="When --vary k, sample k uniformly from [0, k-max).")
+    p.add_argument("--datapath", choices=["masked", "unmasked"], default="masked",
+                   help="masked=fresh additive shares; unmasked=logical input in share0, share1=0")
+    p.add_argument("--core-start-delay", type=int, default=0,
+                   help="Target-clock cycles between trigger rising and core input latch (CTRL[7:5], 0..7).")
     args = p.parse_args()
+
+    if not 0 <= args.core_start_delay <= 7:
+        print("ERROR: --core-start-delay must be in [0, 7]", file=sys.stderr)
+        return 2
 
     bitpath = Path(args.bitfile).expanduser().resolve()
     if not bitpath.exists():
@@ -672,6 +699,8 @@ def main():
             b_fixed=args.b_fixed, q=q,
             seed=args.seed,
             vary=args.vary, k_max=args.k_max,
+            datapath=args.datapath,
+            core_start_delay=args.core_start_delay,
         )
     finally:
         try:
@@ -740,6 +769,7 @@ def main():
             "mode":  args.mode,
             "mode2": args.mode2,
             "q":     q,
+            "core_start_delay_cycles": args.core_start_delay,
         },
         "secret_strategy": {
             "variable":       args.vary,
@@ -749,12 +779,14 @@ def main():
             "random_k_range": [0, args.k_max] if args.vary == "k" else None,
         },
         "capture_protocol": {
-            "datapath":            "always-masked",
+            "datapath":            args.datapath,
+            "core_start_delay_cycles": args.core_start_delay,
             "b_field_note":        "inputs['b'] is the logical TVLA grouping value; "
-                                   "REG_A/REG_B carry RTL share0, "
-                                   "REG_A_SHARE1/REG_B_SHARE1 carry fresh random "
-                                   "share1, and output shares are recombined only "
-                                   "in this host script.",
+                                   "in masked datapath REG_A/REG_B carry RTL share0 "
+                                   "and REG_A_SHARE1/REG_B_SHARE1 carry fresh random "
+                                   "share1; in unmasked datapath share0 is the logical "
+                                   "value and share1 is zero. Output shares are "
+                                   "recombined only in this host script.",
         },
         "seed":         args.seed,
         "bitfile":      str(bitpath),

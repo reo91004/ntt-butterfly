@@ -17,8 +17,14 @@
 
 > normal capture의 큰 peak에는 `REG_B` write/input path 영향이 섞여 있었지만,
 > 그 영향을 제거해도 butterfly core 계산 경로에서 값 의존 1차 누설이 실제로 남는다.
-> `a,b`를 additive share로 나누고 RTL에서 share-wise로 계산하면 현재 N=3000 1차
+> `a,b`를 additive share로 나누고 RTL에서 share-wise로 계산하면 현재 N=20000 1차
 > TVLA 기준에서는 누설 peak가 threshold 아래로 내려간다.
+
+현재 최종 bitstream은 항상 two-share datapath를 포함한다. 따라서 이 문서의 최신
+`unmasked` 비교는 별도 single-core bitstream이 아니라, 같은 bitstream에
+`share0=logical value`, `share1=0`을 넣는 zero-share control이다. 즉 "마스킹 회로를
+물리적으로 제거한 하드웨어"와의 비교가 아니라, 같은 하드웨어에서 입력 encoding만
+unshared/shared로 바꾼 비교다.
 
 대표 결과:
 
@@ -31,13 +37,22 @@
 | Core force-zero control | [`20260511_194134_exp_F12b_preload_force_core_zero_gain0_N3k`](../host/results/20260511_194134_exp_F12b_preload_force_core_zero_gain0_N3k) | `|t|=3.407` | no leakage |
 | Final unmasked RTL | [`20260511_210817_exp_I_unmasked_rtl_Aalias_N3k`](../host/results/20260511_210817_exp_I_unmasked_rtl_Aalias_N3k) | `|t|=32.477 @ s21` | leakage |
 | Final masked RTL | [`20260511_210842_exp_I_masked_rtl_Aalias_N3k`](../host/results/20260511_210842_exp_I_masked_rtl_Aalias_N3k) | `|t|=3.035` | no first-order leakage |
-| Final masked RTL, delayed trigger | [`20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k`](../host/results/20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k) | `|t|=2.487` | no first-order leakage |
+| Final masked RTL, older delay check | [`20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k`](../host/results/20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k) | `|t|=2.487` | no first-order leakage |
+| Core-start delay 0/4/7 | [`exp_K_*`](experiments/README.md) | `s22 -> s30 -> s36` | peak shifts by delay |
+| N20k zero-share unmasked | [`20260512_154612_exp_L_unmasked_N20k`](../host/results/20260512_154612_exp_L_unmasked_N20k) | `|t|=86.422 @ s24` | leakage |
+| N20k masked | [`20260512_154745_exp_L_masked_N20k`](../host/results/20260512_154745_exp_L_masked_N20k) | `|t|=2.512 @ s43` | no first-order leakage |
 
 Final RTL TVLA plots:
 
 ![Unmasked RTL TVLA](../host/results/20260511_210817_exp_I_unmasked_rtl_Aalias_N3k/tvla_plot.png)
 
 ![Masked RTL TVLA](../host/results/20260511_210842_exp_I_masked_rtl_Aalias_N3k/tvla_plot.png)
+
+Latest N20k zero-share/masked comparison:
+
+![N20k zero-share unmasked TVLA](../host/results/20260512_154612_exp_L_unmasked_N20k/tvla_plot.png)
+
+![N20k masked TVLA](../host/results/20260512_154745_exp_L_masked_N20k/tvla_plot.png)
 
 ## 2. 하드웨어와 측정 환경
 
@@ -71,7 +86,7 @@ Vivado가 실제로 합성하는 파일은 `unified_butterfly2/unified_butterfly
 
 | 파일 | 역할 |
 |---|---|
-| `cw305_unified_butterfly2_top_v4_directwrite.v` | CW305 USB register wrapper, trigger, status, output latch, masked/unmasked mode 선택 |
+| `cw305_unified_butterfly2_top_v4_directwrite.v` | CW305 USB register wrapper, trigger, status, output latch, two-share core input latch |
 | `unified_butterfly2_top.v` | zeta ROM lookup + single-core top + masked two-share top |
 | `unified_bufferfly2.v` | 7-cycle pipelined butterfly core |
 | `Modular_Reduction32.v` | 4-cycle Montgomery reduction |
@@ -104,19 +119,17 @@ Register map:
 | 주소 | 이름 | 설명 |
 |---|---|---|
 | `0x00` | `A_LEGACY` | legacy A alias. CW305 host path에서 write가 반영되지 않는 문제가 있어 host는 쓰지 않음 |
-| `0x01` | `B` | unmasked `b`, 또는 masked mode의 `b0` |
+| `0x01` | `B` | host `--datapath unmasked`에서는 logical `b`, `--datapath masked`에서는 `b0` |
 | `0x02` | `K` | zeta index, 10-bit |
-| `0x03` | `CTRL` | bit0=`mode`, bit1=`mode2`, bit2=`use_b_preload`, bit3=`force_core_b_zero`, bit4=`route_REG_B_writes_to_B_PRELOAD`, bit[7:5]=`trigger_delay_cycles` |
+| `0x03` | `CTRL` | bit0=`mode`, bit1=`mode2`; current wrapper ignores upper bits |
 | `0x04` | `STATUS/CMD` | write bit0=start, bit1=clear_done; read bit0=done, bit1=busy |
-| `0x05` | `OUT1` | unmasked `out1`, 또는 masked mode의 `out1_0` |
-| `0x06` | `OUT2` | unmasked `out2`, 또는 masked mode의 `out2_0` |
-| `0x07` | `B_PRELOAD` | Exp G/H용 preload register readback |
-| `0x08` | `A_SHARE1` | masked mode의 `a1` |
-| `0x09` | `B_SHARE1` | masked mode의 `b1` |
-| `0x0A` | `OUT1_SHARE1` | masked mode의 `out1_1` |
-| `0x0B` | `OUT2_SHARE1` | masked mode의 `out2_1` |
-| `0x0C` | `MASK_CTRL` | write bit0=`mask_enable_shadow`; read bit0=shadow, bit1=core-latched mask enable |
-| `0x0D` | `A` | host-safe A alias. unmasked `a`, 또는 masked mode의 `a0` |
+| `0x05` | `OUT1` | share0 output. zero-share unmasked에서는 logical `out1`과 같음 |
+| `0x06` | `OUT2` | share0 output. zero-share unmasked에서는 logical `out2`와 같음 |
+| `0x08` | `A_SHARE1` | host `--datapath unmasked`에서는 `0`, `--datapath masked`에서는 `a1` |
+| `0x09` | `B_SHARE1` | host `--datapath unmasked`에서는 `0`, `--datapath masked`에서는 `b1` |
+| `0x0A` | `OUT1_SHARE1` | share1 output. zero-share unmasked에서는 `0` share의 output |
+| `0x0B` | `OUT2_SHARE1` | share1 output. zero-share unmasked에서는 `0` share의 output |
+| `0x0D` | `A` | host-safe A alias. host `--datapath unmasked`에서는 logical `a`, `--datapath masked`에서는 `a0` |
 | `0x70..0x75` | debug | write count, last address/data, raw USB pins |
 | `0x7E` | `ID` | `0xC4`이면 현재 wrapper bitstream이 올라간 것 |
 
@@ -147,35 +160,26 @@ out1=2911, out2=3236
 
 ### 4.2 Start 시점의 동작
 
-Unmasked mode:
+현재 wrapper RTL은 항상 두 share core를 latch한다. `host/capture_traces.py`의
+`--datapath`가 share 값을 어떻게 보낼지만 결정한다.
 
 ```text
-a_core        <= a_shadow
-b_core        <= force_core_b_zero ? 0 :
-                 use_b_preload ? b_preload : b_shadow
-a_share1_core <= 0
-b_share1_core <= 0
-mask_enable   <= 0
+unmasked: A/B = logical a/b, A_SHARE1/B_SHARE1 = 0
+masked:   A/B = share0,      A_SHARE1/B_SHARE1 = fresh random share1
+
+start:
+  a_share0_core <= a_share0_shadow
+  b_share0_core <= b_share0_shadow
+  a_share1_core <= a_share1_shadow
+  b_share1_core <= b_share1_shadow
 ```
-
-Masked mode:
-
-```text
-a_core        <= a_shadow          // a0
-a_share1_core <= a_share1_shadow   // a1
-b_core        <= b_shadow          // b0
-b_share1_core <= b_share1_shadow   // b1
-mask_enable   <= 1
-```
-
-`--rtl-masked`에서는 preload path를 쓰지 않는다. dedicated share registers
-`A/B/A_SHARE1/B_SHARE1`가 곧 masked input이다.
 
 ### 4.3 Trigger와 output latch
 
-Wrapper는 start 후 `busy_reg=1`로 들어간다. `trigger_delay_cycles=0`이면 start와 같은
-cycle에 `trigger_reg`가 올라간다. `trigger_delay_cycles=2`이면 target clock 2 cycle 뒤에
-trigger가 올라간다.
+Wrapper는 start 후 `busy_reg=1`로 들어가고 같은 cycle에 `trigger_reg`를 올린다.
+현재 RTL은 start와 같은 cycle에 core input도 latch한다. 아래 6.6의 core-start delay
+확인은 임시 delay-enabled wrapper로 수행한 위치 확인 실험이며, 현재 wrapper에는 그
+delay knob을 남기지 않았다.
 
 core 자체는 7-cycle pipeline이고, top-level ROM/input alignment 때문에 wrapper start
 기준으로 output은 약 8 cycle 뒤 valid가 된다. wrapper는 `CAPTURE_DELAY=72` cycle 동안
@@ -199,7 +203,7 @@ CAPTURE_DELAY=72는 butterfly latency가 아니다.
 | S3-S6 | Montgomery reduction 4 stages |
 | S7 | final add/sub and modular correction, `out1/out2` register |
 
-Husky-Plus `2 samples/cycle`, trigger delay 0 기준 대략:
+Husky-Plus `2 samples/cycle`, 현재 wrapper start 기준 대략:
 
 | Cycle | ADC samples | 의미 |
 |---|---|---|
@@ -316,6 +320,26 @@ core에는 logical b가 아니라 random share b0만 넣음
 ### 6.5 Final RTL masking: 두 share를 모두 하드웨어에서 계산
 
 마지막으로 wrapper와 RTL에 실제 masked datapath를 구현했다.
+중요하게, 최신 bitstream은 masked/unmasked bitstream을 따로 만들지 않는다. 항상 두
+share core가 있고 host가 다음 두 방식 중 하나로 입력을 보낸다.
+
+```text
+zero-share unmasked control:
+  A/B = logical a/b, A_SHARE1/B_SHARE1 = 0
+
+masked:
+  A/B = a0/b0, A_SHARE1/B_SHARE1 = fresh random a1/b1
+```
+
+이 비교는 논리적으로 정합하다. zero-share control에서는 share0 core가 실제 logical
+secret `b`를 보므로 1차 TVLA 누설이 나타나야 하고, masked에서는 각 core가 보는 값이
+logical `b`와 독립적인 random share가 되므로 1차 TVLA가 내려가야 한다. 또한 같은
+bitstream을 사용하므로 place-and-route, trigger, clock, readback 구조가 동일하다.
+
+다만 이것은 "마스킹 회로를 물리적으로 제거한 single-core unmasked 하드웨어"와의
+전력/면적 비교가 아니다. 두 번째 core는 여전히 존재하며 zero share를 계산한다. 따라서
+이 실험의 의미는 "같은 two-share hardware에서 unshared encoding과 shared encoding의
+1차 누설 비교"다.
 
 대표 결과:
 
@@ -323,7 +347,9 @@ core에는 logical b가 아니라 random share b0만 넣음
 |---|---|---|---|
 | Final unmasked RTL | [`20260511_210817_exp_I_unmasked_rtl_Aalias_N3k`](../host/results/20260511_210817_exp_I_unmasked_rtl_Aalias_N3k) | [plot](../host/results/20260511_210817_exp_I_unmasked_rtl_Aalias_N3k/tvla_plot.png) | `|t|=32.477 @ s21`, 66/240 fail |
 | Final masked RTL | [`20260511_210842_exp_I_masked_rtl_Aalias_N3k`](../host/results/20260511_210842_exp_I_masked_rtl_Aalias_N3k) | [plot](../host/results/20260511_210842_exp_I_masked_rtl_Aalias_N3k/tvla_plot.png) | `|t|=3.035 @ s70`, 0/240 fail |
-| Final masked RTL, trigger delay 2 | [`20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k`](../host/results/20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k) | [plot](../host/results/20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k/tvla_plot.png) | `|t|=2.487 @ s132`, 0/240 fail |
+| Final masked RTL, older delay check | [`20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k`](../host/results/20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k) | [plot](../host/results/20260511_210917_exp_I_masked_rtl_Aalias_tdelay2_N3k/tvla_plot.png) | `|t|=2.487 @ s132`, 0/240 fail |
+| Zero-share unmasked N20k | [`20260512_154612_exp_L_unmasked_N20k`](../host/results/20260512_154612_exp_L_unmasked_N20k) | [plot](../host/results/20260512_154612_exp_L_unmasked_N20k/tvla_plot.png) | `|t|=86.422 @ s24`, 33/240 fail |
+| Masked N20k | [`20260512_154745_exp_L_masked_N20k`](../host/results/20260512_154745_exp_L_masked_N20k) | [plot](../host/results/20260512_154745_exp_L_masked_N20k/tvla_plot.png) | `|t|=2.512 @ s43`, 0/240 fail |
 
 기능 sanity도 통과했다.
 
@@ -335,6 +361,39 @@ masked out2 == unmasked out2 after host recombination: True
 (a0+a1) mod q == a: True
 (b0+b1) mod q == b: True
 ```
+
+최신 N20k 비교에서도 같은 seed와 logical input sequence를 썼고, 다음 정합성 체크를
+통과했다.
+
+```text
+L group arrays identical: True
+L b arrays identical: True
+L masked/unmasked outputs identical: True
+bitstream md5: 4a604660d73a888d341bf12cb1ebfa16
+```
+
+### 6.6 Core-start delay 확인
+
+임시 delay-enabled wrapper에서 `CTRL[7:5]`로 trigger 상승 후 core input latch를
+0..7 target cycles 늦출 수 있게 하고, unmasked zero-share control에서 N=3000으로
+delay 0/4/7을 비교했다. 이 실험은 위치 확인용으로 남기되, 현재 RTL에서는 해당 delay
+제어 로직을 제거했다.
+
+| core-start delay | 산출물 | 결과 |
+|---:|---|---|
+| 0 cycles | [`20260512_154453_exp_K_unmasked_coredelay0_N3k`](../host/results/20260512_154453_exp_K_unmasked_coredelay0_N3k) | `|t|=33.953 @ s22`, 42/240 fail |
+| 4 cycles | [`20260512_154522_exp_K_unmasked_coredelay4_N3k`](../host/results/20260512_154522_exp_K_unmasked_coredelay4_N3k) | `|t|=31.682 @ s30`, 20/240 fail |
+| 7 cycles | [`20260512_154544_exp_K_unmasked_coredelay7_N3k`](../host/results/20260512_154544_exp_K_unmasked_coredelay7_N3k) | `|t|=30.524 @ s36`, 24/240 fail |
+
+Husky-Plus 설정은 `2 samples/cycle`이므로 delay 4 cycles는 `+8 samples`,
+delay 7 cycles는 `+14 samples`에 해당한다. 관측 peak가 `s22 -> s30 -> s36`으로
+움직였으므로 TVLA peak는 core 연산 시작점을 따라 이동한다.
+
+![Core-start delay 0 TVLA](../host/results/20260512_154453_exp_K_unmasked_coredelay0_N3k/tvla_plot.png)
+
+![Core-start delay 4 TVLA](../host/results/20260512_154522_exp_K_unmasked_coredelay4_N3k/tvla_plot.png)
+
+![Core-start delay 7 TVLA](../host/results/20260512_154544_exp_K_unmasked_coredelay7_N3k/tvla_plot.png)
 
 ## 7. 정확히 어디서 leakage가 나는가
 
@@ -453,11 +512,12 @@ python3 host/capture_traces.py \
     --label exp_I_unmasked_rtl_Aalias_N3k \
     --num-traces 3000 \
     --sample-cycles 120 \
-    --trigger-mode internal \
     --gain-db 0 \
     --mode 1 --mode2 0 --k 16 \
     --seed 0xC0FFEE \
-    --b-fixed 0x12345678
+    --b-fixed 0x12345678 \
+    --datapath unmasked \
+    --core-start-delay 0
 
 python3 host/tvla.py host/results/<timestamp>_exp_I_unmasked_rtl_Aalias_N3k
 ```
@@ -470,14 +530,67 @@ python3 host/capture_traces.py \
     --label exp_I_masked_rtl_Aalias_N3k \
     --num-traces 3000 \
     --sample-cycles 120 \
-    --trigger-mode internal \
     --gain-db 0 \
     --mode 1 --mode2 0 --k 16 \
     --seed 0xC0FFEE \
     --b-fixed 0x12345678 \
-    --rtl-masked
+    --datapath masked \
+    --core-start-delay 0
 
 python3 host/tvla.py host/results/<timestamp>_exp_I_masked_rtl_Aalias_N3k
+```
+
+Core-start delay sweep, zero-share unmasked control:
+
+```bash
+for delay in 0 4 7; do
+    python3 host/capture_traces.py \
+        --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+        --label exp_K_unmasked_coredelay${delay}_N3k \
+        --num-traces 3000 \
+        --sample-cycles 120 \
+        --gain-db 0 \
+        --mode 1 --mode2 0 --k 16 \
+        --seed 0xC0FFEE \
+        --b-fixed 0x12345678 \
+        --datapath unmasked \
+        --core-start-delay ${delay}
+done
+
+python3 host/tvla.py host/results/<timestamp>_exp_K_unmasked_coredelay0_N3k
+python3 host/tvla.py host/results/<timestamp>_exp_K_unmasked_coredelay4_N3k
+python3 host/tvla.py host/results/<timestamp>_exp_K_unmasked_coredelay7_N3k
+```
+
+N20k masked/unmasked comparison on the same two-share bitstream:
+
+```bash
+python3 host/capture_traces.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --label exp_L_unmasked_N20k \
+    --num-traces 20000 \
+    --sample-cycles 120 \
+    --gain-db 0 \
+    --mode 1 --mode2 0 --k 16 \
+    --seed 0xC0FFEE \
+    --b-fixed 0x12345678 \
+    --datapath unmasked \
+    --core-start-delay 0
+
+python3 host/capture_traces.py \
+    --bitfile bitstream/cw305_unified_butterfly2_top_v4.bit \
+    --label exp_L_masked_N20k \
+    --num-traces 20000 \
+    --sample-cycles 120 \
+    --gain-db 0 \
+    --mode 1 --mode2 0 --k 16 \
+    --seed 0xC0FFEE \
+    --b-fixed 0x12345678 \
+    --datapath masked \
+    --core-start-delay 0
+
+python3 host/tvla.py host/results/<timestamp>_exp_L_unmasked_N20k
+python3 host/tvla.py host/results/<timestamp>_exp_L_masked_N20k
 ```
 
 CW-Lite/Pro 예시:
@@ -489,12 +602,12 @@ python3 host/capture_traces.py \
     --adc-mul 1 \
     --sample-cycles 120 \
     --num-traces 3000 \
-    --trigger-mode internal \
     --gain-db 0 \
     --mode 1 --mode2 0 --k 16 \
     --seed 0xC0FFEE \
     --b-fixed 0x12345678 \
-    --rtl-masked \
+    --datapath masked \
+    --core-start-delay 0 \
     --exclude-scope-sn none
 ```
 
@@ -504,10 +617,10 @@ python3 host/capture_traces.py \
 
 필수 후속 검증:
 
-- N을 더 키운 1차 TVLA
 - 2차 TVLA: 예를 들어 centered trace products로 share-combination leakage 확인
-- Kyber CT/GS, Dilithium CT/GS, 여러 `k`에서 반복
+- Kyber CT/GS, Dilithium CT/GS, 여러 `k`에서 N20k 반복
 - place-and-route seed를 바꿔 FPGA routing 변화에 대한 민감도 확인
+- single-core unmasked bitstream이 필요한 경우 별도 빌드로 전력/면적 기준 비교
 - NTT 전체 pipeline으로 확장할 때 share refresh와 output share storage 정책 확인
 - masked share readback 또는 host recombination이 capture window 밖에서만 일어나는지 계속 확인
 
