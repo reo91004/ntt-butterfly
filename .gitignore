@@ -11,7 +11,8 @@ env/
 
 # Host-side experiment outputs
 host/results/*
-!host/results/.gitkeep
+!host/results/*/
+host/results/*/*
 host/__pycache__/
 *.log
 *.out
@@ -46,7 +47,10 @@ host/__pycache__/
 *.swo
 
 # Temporary traces / analysis outputs
-results/
+/results/
 trace*.npy
 tvla_*.npy
 tvla_*.png
+
+# Keep documentation-visible experiment plots, but not raw capture data.
+!host/results/*/tvla_plot.png

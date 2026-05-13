@@ -45,7 +45,7 @@ inverse, Dilithium forward, Dilithium inverse — selected by `mode`/`mode2`.
 ### 1.2 Side-channel platform
 
 The wrapper drives `tio_trigger = trigger_reg`. So during each capture:
-- start register write → `busy_reg` rises and `trigger_reg` rises after the configured delay
+- start register write → `busy_reg` rises and `trigger_reg` rises immediately
 - `tio_trigger` rises → CW scope (already armed) begins ADC capture
 - the 7-cycle core result becomes valid near the start of the trace
 - `CAPTURE_DELAY=72` keeps the trigger high for a post-result window, then
@@ -315,6 +315,12 @@ python3 host/capture_traces.py \
 Defaults:
 - scope auto-detect (Husky-Plus, Husky, Lite, Pro)
 - `--target-freq 96e6`, `--adc-mul 0` (auto: Husky/Husky-Plus x2, CW-Lite/Pro x1)
+- `--datapath masked` uses fresh additive shares; `--datapath unmasked` sends the
+  logical value in share0 with share1 set to zero
+- `--core-start-delay` is retained for reproducing historical delay-enabled
+  bitstreams; the current wrapper RTL ignores `CTRL[7:5]`
+- The current bitstream always contains the two-share datapath. `--datapath unmasked`
+  is a zero-share control, not a separate single-core unmasked hardware build.
 - a-input 0xCAFEBABE is reduced mod q before FPGA write, b-fixed 0x12345678 is reduced mod q, seed 0xC0FFEE for reproducibility
 - output → `host/results/<timestamp>_kyber_ct_b_first/`
 
